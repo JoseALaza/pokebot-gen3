@@ -25,6 +25,7 @@ def get_bot_modes() -> list[Type[BotMode]]:
         from .item_steal import ItemStealMode
         from .kecleon import KecleonMode
         from .level_grind import LevelGrindMode
+        from .llm_trainer import LLMTrainerMode
         from .nugget_bridge import NuggetBridgeMode
         from .puzzle_solver import PuzzleSolverMode
         from .roamer_reset import RoamerResetMode
@@ -49,6 +50,7 @@ def get_bot_modes() -> list[Type[BotMode]]:
             ItemStealMode,
             KecleonMode,
             LevelGrindMode,
+            LLMTrainerMode,
             NuggetBridgeMode,
             PuzzleSolverMode,
             RoamerResetMode,
