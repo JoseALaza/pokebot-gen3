@@ -72,6 +72,12 @@ class LLMTrainerMode(BotMode):
                     f"Map: {state['player']['map']}[/]"
                 )
                 
+                # Check if map changed
+                if self.memory_reader.has_map_changed():
+                    old_map = self.memory_reader.last_state.map_name
+                    new_map = state['player']['map']
+                    console.print(f"[bold magenta]  → MAP CHANGED: {old_map} → {new_map}[/]")
+                
                 # Check if player moved
                 if self.memory_reader.has_player_moved():
                     console.print("[cyan]  → Player moved! Reading full state...[/]")

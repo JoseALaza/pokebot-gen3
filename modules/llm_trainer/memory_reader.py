@@ -111,6 +111,21 @@ class MemoryReader:
         moved = current_state != self.last_state
         return moved
     
+    def has_map_changed(self) -> bool:
+        """
+        Check if map has changed since last check.
+        
+        Returns:
+            True if map changed, False otherwise
+        """
+        current_state = self.get_player_state()
+        
+        if self.last_state is None:
+            return False
+        
+        map_changed = current_state.map_name != self.last_state.map_name
+        return map_changed
+
     def update_last_state(self):
         """Update the stored last state to current state"""
         self.last_state = self.get_player_state()
