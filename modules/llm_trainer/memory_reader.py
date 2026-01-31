@@ -3,9 +3,10 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from modules.context import context
-from modules.memory import get_game_state, GameState
+from modules.memory import get_game_state_symbol, get_game_state, GameState
 from modules.player import get_player_avatar
-from modules.pokemon import get_party
+from modules.pokemon_party import get_party
+from modules.map import get_map_data_for_current_position, MapLocation
 
 
 @dataclass
@@ -63,6 +64,7 @@ class MemoryReader:
         """
         avatar = get_player_avatar()
         game_state = get_game_state()
+        map_data= get_map_data_for_current_position()
         
         # Determine facing direction
         # From pokebot-gen3: 1=DOWN, 2=UP, 3=LEFT, 4=RIGHT
@@ -72,22 +74,26 @@ class MemoryReader:
             3: "LEFT",
             4: "RIGHT"
         }
-        facing = facing_map.get(avatar.facing_direction, "UNKNOWN")
+        facing = avatar.facing_direction
+        
+        # local_coordinates is a tuple (x, y), not an object
+        x, y = avatar.local_coordinates
         
         state = PlayerState(
-            x=avatar.local_coordinates.x,
-            y=avatar.local_coordinates.y,
+            x=x,
+            y=y,
             facing=facing,
-            map_name=game_state.map.name,
-            map_group=game_state.map.map_group,
-            map_number=game_state.map.map_number
+            map_name=map_data.dict_for_map()["pretty_name"],
+            map_group=map_data.map_group,
+            map_number=map_data.map_number
         )
         
         return state
     
     def get_current_map_name(self) -> str:
         """Get the name of the current map"""
-        return get_game_state().map.name
+        map_data = get_map_data_for_current_position()
+        return map_data.map_name
     
     def has_player_moved(self) -> bool:
         """
@@ -148,7 +154,7 @@ class MemoryReader:
             Dictionary with all relevant game state for LLM
         """
         player = self.get_player_state()
-        game_state = get_game_state()
+        game_state = get_game_state_symbol()
         
         # Get party info (can be expensive, so only call when needed)
         party_info = self.get_party_summary()
@@ -156,7 +162,7 @@ class MemoryReader:
         state = {
             "player": player.to_dict(),
             "frame": context.frame,
-            "game_state": game_state.value.name if game_state else "UNKNOWN",
+            "game_state": game_state if game_state else "UNKNOWN",
             "party": party_info,
             "party_size": len(party_info)
         }
@@ -172,10 +178,10 @@ class MemoryReader:
             Dictionary with basic state info
         """
         player = self.get_player_state()
-        game_state = get_game_state()
+        game_state = get_game_state_symbol()
         
         return {
             "player": player.to_dict(),
             "frame": context.frame,
-            "game_state": game_state.value.name if game_state else "UNKNOWN"
+            "game_state": game_state if game_state else "UNKNOWN"
         }
