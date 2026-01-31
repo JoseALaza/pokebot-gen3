@@ -3,10 +3,10 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from modules.context import context
-from modules.memory import get_game_state_symbol, get_game_state, GameState
+from modules.memory import get_game_state_symbol
 from modules.player import get_player_avatar
 from modules.pokemon_party import get_party
-from modules.map import get_map_data_for_current_position, MapLocation
+from modules.map import get_map_data_for_current_position
 
 
 @dataclass
@@ -14,7 +14,7 @@ class PlayerState:
     """Player state information"""
     x: int
     y: int
-    facing: str  # "UP", "DOWN", "LEFT", "RIGHT"
+    facing: str  # "Down", "Up", "Left", "Right"
     map_name: str
     map_group: int
     map_number: int
@@ -53,7 +53,6 @@ class MemoryReader:
     
     def __init__(self):
         self.last_state: Optional[PlayerState] = None
-        self._frame_count = 0
     
     def get_player_state(self) -> PlayerState:
         """
@@ -63,20 +62,13 @@ class MemoryReader:
             PlayerState object with position, facing, map, etc.
         """
         avatar = get_player_avatar()
-        game_state = get_game_state()
-        map_data= get_map_data_for_current_position()
+        map_data = get_map_data_for_current_position()
         
-        # Determine facing direction
-        # From pokebot-gen3: 1=DOWN, 2=UP, 3=LEFT, 4=RIGHT
-        facing_map = {
-            1: "DOWN",
-            2: "UP",
-            3: "LEFT",
-            4: "RIGHT"
-        }
+        # Determine facing direction string
+        # From pokebot-gen3: 1=Down, 2=Up, 3=Left, 4=Right
         facing = avatar.facing_direction
         
-        # local_coordinates is a tuple (x, y), not an object
+        # Extract position from tuple
         x, y = avatar.local_coordinates
         
         state = PlayerState(
@@ -91,9 +83,14 @@ class MemoryReader:
         return state
     
     def get_current_map_name(self) -> str:
-        """Get the name of the current map"""
+        """
+        Get the name of the current map.
+        
+        Returns:
+            Map name string (e.g., "Pallet Town")
+        """
         map_data = get_map_data_for_current_position()
-        return map_data.map_name
+        return map_data.dict_for_map()["pretty_name"]
     
     def has_player_moved(self) -> bool:
         """
@@ -108,6 +105,7 @@ class MemoryReader:
             # First check, consider it as "moved" to trigger initial processing
             return True
         
+        # Check if position or map changed
         moved = current_state != self.last_state
         return moved
     
@@ -123,6 +121,7 @@ class MemoryReader:
         if self.last_state is None:
             return False
         
+        # Check only map name
         map_changed = current_state.map_name != self.last_state.map_name
         return map_changed
 
@@ -144,9 +143,9 @@ class MemoryReader:
             if pokemon is None:
                 continue
             
-            # Get move names
+            # Extract move names
             moves = [move.move.name if move else None for move in pokemon.moves]
-            moves = [m for m in moves if m is not None]  # Filter out None
+            moves = [m for m in moves if m is not None]
             
             party_summary.append({
                 "species": pokemon.species.name,
@@ -170,19 +169,15 @@ class MemoryReader:
         """
         player = self.get_player_state()
         game_state = get_game_state_symbol()
-        
-        # Get party info (can be expensive, so only call when needed)
         party_info = self.get_party_summary()
         
-        state = {
+        return {
             "player": player.to_dict(),
             "frame": context.frame,
             "game_state": game_state if game_state else "UNKNOWN",
             "party": party_info,
             "party_size": len(party_info)
         }
-        
-        return state
     
     def read_lightweight_state(self) -> Dict[str, Any]:
         """
