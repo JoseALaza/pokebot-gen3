@@ -14,6 +14,7 @@ from typing import Generator
 from modules.modes import BotMode
 from modules.console import console
 from modules.llm_trainer.memory_reader import MemoryReader
+from modules.llm_trainer.vision_processor import VisionProcessor
 
 
 class LLMTrainerMode(BotMode):
@@ -36,8 +37,9 @@ class LLMTrainerMode(BotMode):
         """Initialize the LLM Trainer components"""
         console.print("[bold yellow]Initializing LLM Trainer mode...[/]")
         
-        # Initialize memory reader
+        # Initialize components
         self.memory_reader = MemoryReader()
+        self.vision_processor = VisionProcessor()
         
         # Tracking
         self.frame_count = 0
@@ -55,13 +57,13 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 2: Testing Memory Reader[/]")
-        console.print("[yellow]Watch console for player state updates every second[/]")
+        console.print("[yellow]Phase 3: Testing Vision Processor[/]")
+        console.print("[yellow]Watch console for tile map updates[/]")
         
         while True:
             # Log state periodically for testing
             if self.frame_count - self.last_logged_frame >= self.log_interval:
-                # Read lightweight state (faster, for frequent checks)
+                # Read lightweight state
                 state = self.memory_reader.read_lightweight_state()
                 
                 pos = state['player']['position']
@@ -82,8 +84,29 @@ class LLMTrainerMode(BotMode):
                 if self.memory_reader.has_player_moved():
                     console.print("[cyan]  → Player moved! Reading full state...[/]")
                     
-                    # Read full state (includes party info)
+                    # Read full state
                     full_state = self.memory_reader.read_full_state()
+                    
+                    # Process vision
+                    console.print("[blue]  → Processing vision...[/]")
+                    vision_data = self.vision_processor.process_frame()
+                    
+                    # Show debug info
+                    debug_info = self.vision_processor.get_debug_info()
+                    console.print(f"[dim blue]  → Screenshot: {debug_info['screenshot_shape']}, "
+                                f"dtype={debug_info['screenshot_dtype']}, "
+                                f"range=[{debug_info['screenshot_min_value']}-{debug_info['screenshot_max_value']}], "
+                                f"mean={debug_info['screenshot_mean_value']:.1f}[/]")
+                    console.print(f"[dim blue]  → Tile map: {debug_info['last_tile_map_dimensions']} grid[/]")
+
+                    # Show tile statistics
+                    tile_stats = self.vision_processor.get_tile_statistics(vision_data['tile_map'])
+                    console.print(f"[blue]  → Tile types detected: {tile_stats}[/]")
+                    
+                    # Show a sample of the tile map (first 3 rows)
+                    console.print("[blue]  → Tile map sample (first 3 rows):[/]")
+                    for i, row in enumerate(vision_data['tile_map'][:3]):
+                        console.print(f"[dim]    Row {i}: {' '.join(row[:10])}...[/]")
                     
                     # Log party info
                     console.print(f"[blue]  → Party size: {full_state['party_size']}[/]")
