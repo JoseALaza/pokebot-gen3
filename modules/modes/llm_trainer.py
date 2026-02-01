@@ -62,6 +62,7 @@ class LLMTrainerMode(BotMode):
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
         console.print("[yellow]Phase 4: Testing Action Executor[/]")
         console.print("[yellow]Bot will execute random actions - watch it move![/]")
+        console.print("[dim yellow]Note: Player may turn before moving (Pokemon mechanic)[/]")
         
         while True:
             # Execute random action at intervals
@@ -70,7 +71,7 @@ class LLMTrainerMode(BotMode):
                 state = self.memory_reader.read_lightweight_state()
                 
                 # Choose random action (favor movement over other buttons)
-                actions = ["Up", "Down", "Left", "Right", "A", "Wait"]
+                actions = ["Up", "Down", "Left", "Right", "A", "WAIT"]
                 weights = [25, 25, 25, 25, 5, 5]  # Prefer directional movement
                 action = random.choices(actions, weights=weights)[0]
                 
@@ -82,10 +83,21 @@ class LLMTrainerMode(BotMode):
                 stats = self.action_executor.get_stats()
                 
                 if success:
+                    # Check if this was a turn or a move
+                    facing = state['player']['facing']
+                    will_turn = (
+                        (action == "Up" and facing != "Up") or
+                        (action == "Down" and facing != "Down") or
+                        (action == "Left" and facing != "Left") or
+                        (action == "Right" and facing != "Right")
+                    )
+                    
+                    action_type = "TURN" if will_turn else "MOVE"
+                    
                     console.print(
-                        f"[green]Action #{stats['total_actions']:3d}: {action:5s} | "
+                        f"[green]Action #{stats['total_actions']:3d}: {action:5s} ({action_type:4s}) | "
                         f"Position: ({pos['x']:2d}, {pos['y']:2d}) | "
-                        f"Facing: {state['player']['facing']:5s} | "
+                        f"Facing: {facing:5s} | "
                         f"Map: {state['player']['map']}[/]"
                     )
                 else:
