@@ -10,13 +10,13 @@ This bot mode allows an LLM to play Pokemon FireRed by:
 All decisions are logged for debugging and analysis.
 """
 
-import random
-from typing import Generator
+from typing import Generator, Optional, Dict, Any
 from modules.modes import BotMode
 from modules.console import console
 from modules.llm_trainer.memory_reader import MemoryReader
 from modules.llm_trainer.vision_processor import VisionProcessor
 from modules.llm_trainer.action_executor import ActionExecutor
+from modules.llm_trainer.agent import Agent
 
 
 class LLMTrainerMode(BotMode):
@@ -44,12 +44,120 @@ class LLMTrainerMode(BotMode):
         self.vision_processor = VisionProcessor()
         self.action_executor = ActionExecutor()
         
+        # Initialize agent with mock LLM
+        # Try different strategies: "random", "scripted_exit_house", "explore"
+        self.agent = Agent(use_mock=True, mock_strategy="scripted_exit_house")
+        
         # Tracking
         self.frame_count = 0
-        self.last_action_frame = 0
-        self.action_interval = 30  # Execute action every 30 frames (~0.5 seconds)
+        self.last_decision_frame = 0
+        self.decision_interval = 20  # Make decision every 20 frames
+        
+        # Outcome tracking
+        self.last_decision: Optional[Dict[str, Any]] = None
+        self.last_position: Optional[tuple] = None
+        self.last_map: Optional[str] = None
         
         console.print("[bold green]LLM Trainer mode initialized successfully![/]")
+    
+    def _check_action_outcome(
+        self,
+        decision: Dict[str, Any],
+        old_position: tuple,
+        new_position: tuple,
+        old_map: str,
+        new_map: str,
+        old_facing: str,
+        new_facing: str
+    ) -> Dict[str, Any]:
+        """
+        Check the outcome of an action.
+        
+        Args:
+            decision: The decision that was made
+            old_position: Position before action
+            new_position: Position after action
+            old_map: Map before action
+            new_map: Map after action
+            old_facing: Facing direction before action
+            new_facing: Facing direction after action
+            
+        Returns:
+            Outcome dictionary with success/failure and reason
+        """
+        action = decision["action"]
+        
+        # Map change always counts as success
+        if old_map != new_map:
+            return {
+                "success": True,
+                "type": "map_change",
+                "reason": f"Changed map: {old_map} → {new_map}",
+                "position_changed": old_position != new_position,
+                "facing_changed": old_facing != new_facing
+            }
+        
+        # For directional actions
+        if action in ["Up", "Down", "Left", "Right"]:
+            # Check if position changed
+            if old_position != new_position:
+                return {
+                    "success": True,
+                    "type": "movement",
+                    "reason": f"Moved from {old_position} to {new_position}",
+                    "position_changed": True,
+                    "facing_changed": old_facing != new_facing
+                }
+            # Check if facing changed (turn without movement)
+            elif old_facing != new_facing:
+                return {
+                    "success": True,
+                    "type": "turn",
+                    "reason": f"Turned from {old_facing} to {new_facing}",
+                    "position_changed": False,
+                    "facing_changed": True
+                }
+            else:
+                # Didn't move or turn - likely blocked
+                return {
+                    "success": False,
+                    "type": "blocked",
+                    "reason": f"Could not move {action} - blocked by obstacle",
+                    "position_changed": False,
+                    "facing_changed": False
+                }
+        
+        # For A button
+        elif action == "A":
+            # Hard to detect A button outcome without more context
+            # For now, consider it successful if executed
+            return {
+                "success": True,
+                "type": "button_press",
+                "reason": "Pressed A button",
+                "position_changed": old_position != new_position,
+                "facing_changed": old_facing != new_facing
+            }
+        
+        # For WAIT
+        elif action == "WAIT":
+            return {
+                "success": True,
+                "type": "wait",
+                "reason": "Waited",
+                "position_changed": False,
+                "facing_changed": False
+            }
+        
+        # Unknown action
+        else:
+            return {
+                "success": False,
+                "type": "unknown",
+                "reason": f"Unknown action: {action}",
+                "position_changed": False,
+                "facing_changed": False
+            }
     
     def run(self) -> Generator:
         """
@@ -60,50 +168,76 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 4: Testing Action Executor[/]")
-        console.print("[yellow]Bot will execute random actions - watch it move![/]")
-        console.print("[dim yellow]Note: Player may turn before moving (Pokemon mechanic)[/]")
+        console.print("[yellow]Phase 5: Testing Agent (Mock LLM)[/]")
+        console.print("[yellow]Agent will make decisions and track outcomes[/]")
         
         while True:
-            # Execute random action at intervals
-            if self.frame_count - self.last_action_frame >= self.action_interval:
-                # Read current state
-                state = self.memory_reader.read_lightweight_state()
+            # Make decision at intervals
+            if self.frame_count - self.last_decision_frame >= self.decision_interval:
+                # 1. Read game state BEFORE action
+                game_state_before = self.memory_reader.read_full_state()
+                old_pos = (game_state_before['player']['position']['x'], 
+                          game_state_before['player']['position']['y'])
+                old_map = game_state_before['player']['map']
+                old_facing = game_state_before['player']['facing']
                 
-                # Choose random action (favor movement over other buttons)
-                actions = ["Up", "Down", "Left", "Right", "A", "WAIT"]
-                weights = [25, 25, 25, 25, 5, 5]  # Prefer directional movement
-                action = random.choices(actions, weights=weights)[0]
+                # 2. Process vision (only if player moved to save CPU)
+                vision_data = None
+                if self.memory_reader.has_player_moved():
+                    vision_data = self.vision_processor.process_frame()
+                else:
+                    vision_data = {
+                        "tile_map": self.vision_processor.last_tile_map or [],
+                        "tiles_x": self.vision_processor.tiles_x,
+                        "tiles_y": self.vision_processor.tiles_y
+                    }
                 
-                # Execute action
-                success = self.action_executor.execute(action)
+                # 3. Agent makes decision
+                decision = self.agent.decide(game_state_before, vision_data)
                 
-                # Log action and result
-                pos = state['player']['position']
-                stats = self.action_executor.get_stats()
+                # 4. Execute action
+                success = self.action_executor.execute(decision["action"])
                 
+                # 5. WAIT a few frames for action to complete
+                for _ in range(5):
+                    yield
+                    self.frame_count += 1
+                
+                # 6. Read game state AFTER action
+                game_state_after = self.memory_reader.read_full_state()
+                new_pos = (game_state_after['player']['position']['x'],
+                          game_state_after['player']['position']['y'])
+                new_map = game_state_after['player']['map']
+                new_facing = game_state_after['player']['facing']
+                
+                # 7. Check outcome
+                outcome = self._check_action_outcome(
+                    decision,
+                    old_pos, new_pos,
+                    old_map, new_map,
+                    old_facing, new_facing
+                )
+                
+                # 8. Log decision and outcome
                 if success:
-                    # Check if this was a turn or a move
-                    facing = state['player']['facing']
-                    will_turn = (
-                        (action == "Up" and facing != "Up") or
-                        (action == "Down" and facing != "Down") or
-                        (action == "Left" and facing != "Left") or
-                        (action == "Right" and facing != "Right")
-                    )
-                    
-                    action_type = "TURN" if will_turn else "MOVE"
+                    outcome_icon = "✓" if outcome["success"] else "✗"
+                    outcome_color = "green" if outcome["success"] else "red"
                     
                     console.print(
-                        f"[green]Action #{stats['total_actions']:3d}: {action:5s} ({action_type:4s}) | "
-                        f"Position: ({pos['x']:2d}, {pos['y']:2d}) | "
-                        f"Facing: {facing:5s} | "
-                        f"Map: {state['player']['map']}[/]"
+                        f"[{outcome_color}]{outcome_icon} Decision #{self.agent.get_decision_count():3d}: "
+                        f"{decision['action']:5s} | "
+                        f"Position: ({new_pos[0]:2d}, {new_pos[1]:2d}) | "
+                        f"Facing: {new_facing:5s}[/]"
                     )
+                    console.print(f"[dim cyan]  → {decision['reasoning']}[/]")
+                    console.print(f"[dim {outcome_color}]  → Outcome: {outcome['reason']}[/]")
                 else:
-                    console.print(f"[red]Action failed: {action}[/]")
+                    console.print(f"[red]✗ Action execution failed: {decision['action']}[/]")
                 
-                self.last_action_frame = self.frame_count
+                # Update last state after processing
+                self.memory_reader.update_last_state()
+                
+                self.last_decision_frame = self.frame_count
             
             self.frame_count += 1
             yield
