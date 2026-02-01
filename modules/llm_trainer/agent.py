@@ -85,8 +85,8 @@ class MockLLM:
         """
         # Check if we're still in the house - use proper string check
         map_name = game_state['player']['map']
-        in_house = "Player's House" in map_name or "Players House" in map_name
-        
+        in_house = "Player’s House" in map_name or "Players House" in map_name
+        console.print(in_house, map_name)
         if not in_house:
             # We've exited! Switch to explore mode
             console.print(f"[bold green]Successfully exited house! Current map: {map_name}[/]")
