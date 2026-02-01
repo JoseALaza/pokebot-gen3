@@ -6,6 +6,7 @@ This bot mode allows an LLM to play Pokemon FireRed by:
 2. Processing screenshots into tile representations (vision)
 3. Making decisions based on state and vision (agent)
 4. Executing button presses (action executor)
+5. Building and maintaining maps of explored areas
 
 All decisions are logged for debugging and analysis.
 """
@@ -17,6 +18,7 @@ from modules.llm_trainer.memory_reader import MemoryReader
 from modules.llm_trainer.vision_processor import VisionProcessor
 from modules.llm_trainer.action_executor import ActionExecutor
 from modules.llm_trainer.agent import Agent
+from modules.llm_trainer.map_manager import MapManager
 
 
 class LLMTrainerMode(BotMode):
@@ -27,6 +29,7 @@ class LLMTrainerMode(BotMode):
     - Memory reading from pokebot-gen3's extensive memory mapping
     - Vision processing using a custom ResNet model
     - LLM-based decision making (or mock responses for testing)
+    - Map building and traversal tracking
     - Decision logging and visualization via HTTP server
     """
     
@@ -43,20 +46,16 @@ class LLMTrainerMode(BotMode):
         self.memory_reader = MemoryReader()
         self.vision_processor = VisionProcessor()
         self.action_executor = ActionExecutor()
+        self.map_manager = MapManager()
         
         # Initialize agent with mock LLM
         # Try different strategies: "random", "scripted_exit_house", "explore"
-        self.agent = Agent(use_mock=True, mock_strategy="scripted_exit_house")
+        self.agent = Agent(use_mock=True, mock_strategy="explore")
         
         # Tracking
         self.frame_count = 0
         self.last_decision_frame = 0
-        self.decision_interval = 20  # Make decision every 20 frames
-        
-        # Outcome tracking
-        self.last_decision: Optional[Dict[str, Any]] = None
-        self.last_position: Optional[tuple] = None
-        self.last_map: Optional[str] = None
+        self.decision_interval = 30  # Make decision every 30 frames (~0.5 seconds)
         
         console.print("[bold green]LLM Trainer mode initialized successfully![/]")
     
@@ -168,8 +167,8 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 5: Testing Agent (Mock LLM)[/]")
-        console.print("[yellow]Agent will make decisions and track outcomes[/]")
+        console.print("[yellow]Phase 6A: Testing Map Manager[/]")
+        console.print("[yellow]Agent will explore and build maps[/]")
         
         while True:
             # Make decision at intervals
@@ -181,16 +180,39 @@ class LLMTrainerMode(BotMode):
                 old_map = game_state_before['player']['map']
                 old_facing = game_state_before['player']['facing']
                 
-                # 2. Process vision (only if player moved to save CPU)
-                vision_data = None
-                if self.memory_reader.has_player_moved():
-                    vision_data = self.vision_processor.process_frame()
-                else:
-                    vision_data = {
-                        "tile_map": self.vision_processor.last_tile_map or [],
-                        "tiles_x": self.vision_processor.tiles_x,
-                        "tiles_y": self.vision_processor.tiles_y
-                    }
+                # Load/switch map if needed
+                current_map_key = self.map_manager._get_map_key(
+                    game_state_before['player']['map_group'],
+                    game_state_before['player']['map_number']
+                )
+                
+                if self.map_manager.current_map_key != current_map_key:
+                    self.map_manager.save_map()  # Save old map if exists
+                    self.map_manager.load_map(
+                        game_state_before['player']['map'],
+                        game_state_before['player']['map_group'],
+                        game_state_before['player']['map_number']
+                    )
+                    console.print(f"[magenta]{self.map_manager.get_map_summary()}[/]")
+                    # Increment visit count
+                    self.map_manager.current_map_data['visit_count'] += 1
+                
+                # 2. Process vision and update tile map
+                vision_data = self.vision_processor.process_frame()
+                
+                # Update tile map with current screen
+                self.map_manager.update_tile_map(
+                    old_pos[0],
+                    old_pos[1],
+                    vision_data['tile_map']
+                )
+                
+                # Mark current position as player
+                self.map_manager.set_traversal_at(
+                    old_pos[0],
+                    old_pos[1],
+                    self.map_manager.PLAYER
+                )
                 
                 # 3. Agent makes decision
                 decision = self.agent.decide(game_state_before, vision_data)
@@ -218,7 +240,59 @@ class LLMTrainerMode(BotMode):
                     old_facing, new_facing
                 )
                 
-                # 8. Log decision and outcome
+                # 8. Update traversal map based on outcome
+                if outcome["type"] == "movement":
+                    # Mark old position as walkable
+                    self.map_manager.set_traversal_at(
+                        old_pos[0],
+                        old_pos[1],
+                        self.map_manager.WALKABLE
+                    )
+                    # Mark new position as player
+                    self.map_manager.set_traversal_at(
+                        new_pos[0],
+                        new_pos[1],
+                        self.map_manager.PLAYER
+                    )
+                
+                elif outcome["type"] == "turn":
+                    # Just a turn, mark current position as walkable
+                    self.map_manager.set_traversal_at(
+                        old_pos[0],
+                        old_pos[1],
+                        self.map_manager.WALKABLE
+                    )
+                
+                elif outcome["type"] == "blocked":
+                    # Calculate target tile and mark as blocked
+                    target_x, target_y = self.map_manager.calculate_target_tile(
+                        old_pos[0],
+                        old_pos[1],
+                        old_facing
+                    )
+                    self.map_manager.set_traversal_at(
+                        target_x,
+                        target_y,
+                        self.map_manager.BLOCKED
+                    )
+                    console.print(
+                        f"[red]  → Marked tile ({target_x}, {target_y}) as BLOCKED[/]"
+                    )
+                
+                elif outcome["type"] == "map_change":
+                    # Mark old position as traversal tile
+                    # (Will implement full traversal linking in Phase 6C)
+                    self.map_manager.set_traversal_at(
+                        old_pos[0],
+                        old_pos[1],
+                        self.map_manager.TRAVERSAL
+                    )
+                
+                # 9. Save map periodically
+                if self.agent.get_decision_count() % 10 == 0:
+                    self.map_manager.save_map()
+                
+                # 10. Log decision and outcome
                 if success:
                     outcome_icon = "✓" if outcome["success"] else "✗"
                     outcome_color = "green" if outcome["success"] else "red"
