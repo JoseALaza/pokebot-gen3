@@ -56,6 +56,7 @@ class LLMTrainerMode(BotMode):
         self.frame_count = 0
         self.last_decision_frame = 0
         self.decision_interval = 30  # Make decision every 30 frames (~0.5 seconds)
+        self.last_blocked_tile: Optional[tuple] = None
         
         console.print("[bold green]LLM Trainer mode initialized successfully![/]")
     
@@ -220,10 +221,18 @@ class LLMTrainerMode(BotMode):
                 # 4. Execute action
                 success = self.action_executor.execute(decision["action"])
                 
-                # 5. WAIT a few frames for action to complete
-                for _ in range(5):
+                # 5. WAIT for action to complete with stabilization check
+                last_check_pos = None
+                for i in range(12):
                     yield
                     self.frame_count += 1
+                    if i >= 3:
+                        check_state = self.memory_reader.read_full_state()
+                        check_pos = (check_state['player']['position']['x'],
+                                     check_state['player']['position']['y'])
+                        if check_pos == last_check_pos:
+                            break
+                        last_check_pos = check_pos
                 
                 # 6. Read game state AFTER action
                 game_state_after = self.memory_reader.read_full_state()
@@ -254,32 +263,39 @@ class LLMTrainerMode(BotMode):
                         new_pos[1],
                         self.map_manager.PLAYER
                     )
-                
+                    # Reset blocked tracking on successful movement
+                    self.last_blocked_tile = None
+
                 elif outcome["type"] == "turn":
-                    # Just a turn, mark current position as walkable
+                    # Just a turn, player is still here - mark as player
                     self.map_manager.set_traversal_at(
                         old_pos[0],
                         old_pos[1],
-                        self.map_manager.WALKABLE
+                        self.map_manager.PLAYER
                     )
-                
+
                 elif outcome["type"] == "blocked":
                     # Calculate target tile and mark as blocked
-                    # BUG FIX: Use the action direction, not current facing
                     action_direction = decision["action"]
                     target_x, target_y = self.map_manager.calculate_target_tile(
                         old_pos[0],
                         old_pos[1],
-                        action_direction  # Use action, not old_facing or new_facing
+                        action_direction
                     )
-                    self.map_manager.set_traversal_at(
-                        target_x,
-                        target_y,
-                        self.map_manager.BLOCKED
-                    )
-                    console.print(
-                        f"[red]  → Marked tile ({target_x}, {target_y}) as BLOCKED[/]"
-                    )
+                    if (target_x, target_y) == self.last_blocked_tile:
+                        console.print(
+                            f"[dim]  → Tile ({target_x}, {target_y}) already marked as BLOCKED[/]"
+                        )
+                    else:
+                        self.map_manager.set_traversal_at(
+                            target_x,
+                            target_y,
+                            self.map_manager.BLOCKED
+                        )
+                        self.last_blocked_tile = (target_x, target_y)
+                        console.print(
+                            f"[red]  → Marked tile ({target_x}, {target_y}) as BLOCKED[/]"
+                        )
                 
                 elif outcome["type"] == "map_change":
                     # Mark old position as traversal tile
