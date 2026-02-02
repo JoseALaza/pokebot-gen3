@@ -168,12 +168,29 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 6A: Testing Map Manager[/]")
+        console.print("[yellow]Phase 6B: Enhanced Outcome Detection[/]")
         console.print("[yellow]Agent will explore and build maps[/]")
         
         while True:
             # Make decision at intervals
             if self.frame_count - self.last_decision_frame >= self.decision_interval:
+                # 0. Check if we're in a non-overworld state
+                game_state_type = self.memory_reader.get_game_state_type()
+                if game_state_type == "battle":
+                    console.print("[red]In battle! Pausing LLM decisions.[/]")
+                    self.last_decision_frame = self.frame_count
+                    self.frame_count += 1
+                    yield
+                    continue
+                elif game_state_type == "menu":
+                    console.print("[yellow]In menu. Pressing B to exit.[/]")
+                    self.action_executor.execute("B")
+                    for _ in range(10):
+                        yield
+                        self.frame_count += 1
+                    self.last_decision_frame = self.frame_count
+                    continue
+
                 # 1. Read game state BEFORE action
                 game_state_before = self.memory_reader.read_full_state()
                 old_pos = (game_state_before['player']['position']['x'], 
@@ -251,12 +268,23 @@ class LLMTrainerMode(BotMode):
                 
                 # 8. Update traversal map based on outcome
                 if outcome["type"] == "movement":
-                    # Mark old position as walkable
-                    self.map_manager.set_traversal_at(
-                        old_pos[0],
-                        old_pos[1],
-                        self.map_manager.WALKABLE
-                    )
+                    distance = abs(new_pos[0] - old_pos[0]) + abs(new_pos[1] - old_pos[1])
+
+                    if distance > 1:
+                        # Likely a ledge jump
+                        console.print(f"[magenta]Detected multi-tile movement! Distance: {distance}[/]")
+                        self.map_manager.set_traversal_at(
+                            old_pos[0],
+                            old_pos[1],
+                            self.map_manager.LEDGE
+                        )
+                    else:
+                        # Normal movement - mark old position as walkable
+                        self.map_manager.set_traversal_at(
+                            old_pos[0],
+                            old_pos[1],
+                            self.map_manager.WALKABLE
+                        )
                     # Mark new position as player
                     self.map_manager.set_traversal_at(
                         new_pos[0],
@@ -298,12 +326,16 @@ class LLMTrainerMode(BotMode):
                         )
                 
                 elif outcome["type"] == "map_change":
-                    # Mark old position as traversal tile
-                    # (Will implement full traversal linking in Phase 6C)
+                    # Mark old position as traversal tile in old map
                     self.map_manager.set_traversal_at(
                         old_pos[0],
                         old_pos[1],
                         self.map_manager.TRAVERSAL
+                    )
+                    console.print(
+                        f"[magenta]Map transition: "
+                        f"{old_map} ({old_pos[0]},{old_pos[1]}) → "
+                        f"{new_map} ({new_pos[0]},{new_pos[1]})[/]"
                     )
                 
                 # 9. Save map periodically

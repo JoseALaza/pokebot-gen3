@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from modules.context import context
-from modules.memory import get_game_state_symbol
+from modules.memory import get_game_state_symbol, get_game_state, GameState
 from modules.player import get_player_avatar
 from modules.pokemon_party import get_party
 from modules.map import get_map_data_for_current_position
@@ -179,6 +179,25 @@ class MemoryReader:
             "party_size": len(party_info)
         }
     
+    def get_game_state_type(self) -> str:
+        """
+        Get current game state type.
+
+        Returns:
+            One of: "overworld", "battle", "menu", "unknown"
+        """
+        game_state = get_game_state()
+
+        if game_state == GameState.OVERWORLD:
+            return "overworld"
+        elif game_state in (GameState.BATTLE, GameState.BATTLE_STARTING, GameState.BATTLE_ENDING):
+            return "battle"
+        elif game_state in (GameState.BAG_MENU, GameState.PARTY_MENU, GameState.POKE_STORAGE,
+                            GameState.POKEMON_SUMMARY_SCREEN):
+            return "menu"
+        else:
+            return "unknown"
+
     def read_lightweight_state(self) -> Dict[str, Any]:
         """
         Read lightweight state (without party info).

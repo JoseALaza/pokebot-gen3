@@ -28,6 +28,7 @@ class MapManager:
     PLAYER = 'P'       # Current player position
     TRAVERSAL = 'T'    # Map transition tile
     INTERACTABLE = 'I' # NPC, sign, or interactable object
+    LEDGE = 'L'        # One-way ledge jump
     
     # Buffer size for pre-allocation beyond observed max
     GRID_BUFFER = 10
