@@ -11,14 +11,17 @@ This bot mode allows an LLM to play Pokemon FireRed by:
 All decisions are logged for debugging and analysis.
 """
 
+from pathlib import Path
 from typing import Generator, Optional, Dict, Any
 from modules.modes import BotMode
+from modules.context import context
 from modules.console import console
 from modules.llm_trainer.memory_reader import MemoryReader
 from modules.llm_trainer.vision_processor import VisionProcessor
 from modules.llm_trainer.action_executor import ActionExecutor
 from modules.llm_trainer.agent import Agent
 from modules.llm_trainer.map_manager import MapManager
+from modules.llm_trainer.decision_logger import DecisionLogger
 
 
 class LLMTrainerMode(BotMode):
@@ -52,12 +55,19 @@ class LLMTrainerMode(BotMode):
         # Try different strategies: "random", "scripted_exit_house", "explore"
         self.agent = Agent(use_mock=True, mock_strategy="explore")
         
+        # Decision logger
+        self.decision_logger = DecisionLogger(Path(context.profile.path))
+        self.decision_logger.set_session_info(
+            agent_strategy="explore",
+            llm_provider="mock"
+        )
+
         # Tracking
         self.frame_count = 0
         self.last_decision_frame = 0
         self.decision_interval = 30  # Make decision every 30 frames (~0.5 seconds)
         self.last_blocked_tile: Optional[tuple] = None
-        
+
         console.print("[bold green]LLM Trainer mode initialized successfully![/]")
     
     def _check_action_outcome(
@@ -168,8 +178,9 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 6C: Map Connectivity Graph[/]")
+        console.print("[yellow]Phase 7: Decision Logging[/]")
         console.print("[yellow]Agent will explore and build maps[/]")
+        session_info_set = False
         
         while True:
             # Make decision at intervals
@@ -193,10 +204,18 @@ class LLMTrainerMode(BotMode):
 
                 # 1. Read game state BEFORE action
                 game_state_before = self.memory_reader.read_full_state()
-                old_pos = (game_state_before['player']['position']['x'], 
+                old_pos = (game_state_before['player']['position']['x'],
                           game_state_before['player']['position']['y'])
                 old_map = game_state_before['player']['map']
                 old_facing = game_state_before['player']['facing']
+
+                # Set session start info on first decision
+                if not session_info_set:
+                    self.decision_logger.set_session_info(
+                        start_map=old_map,
+                        start_position=[old_pos[0], old_pos[1]]
+                    )
+                    session_info_set = True
                 
                 # Load/switch map if needed
                 current_map_key = self.map_manager._get_map_key(
@@ -354,11 +373,23 @@ class LLMTrainerMode(BotMode):
                 if self.agent.get_decision_count() % 10 == 0:
                     self.map_manager.save_map()
                 
-                # 10. Log decision and outcome
+                # 10. Log decision to file
+                self.decision_logger.log_decision(
+                    decision_number=self.agent.get_decision_count(),
+                    frame=self.frame_count,
+                    game_state_before=game_state_before,
+                    vision_data=vision_data,
+                    decision=decision,
+                    execution_success=success,
+                    outcome=outcome,
+                    game_state_after=game_state_after
+                )
+
+                # 11. Log decision to console
                 if success:
                     outcome_icon = "✓" if outcome["success"] else "✗"
                     outcome_color = "green" if outcome["success"] else "red"
-                    
+
                     console.print(
                         f"[{outcome_color}]{outcome_icon} Decision #{self.agent.get_decision_count():3d}: "
                         f"{decision['action']:5s} | "
