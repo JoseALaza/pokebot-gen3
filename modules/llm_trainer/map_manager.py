@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from modules.context import context
 from modules.console import console
+from modules.llm_trainer.map_graph import MapGraph
 
 
 class MapManager:
@@ -38,8 +39,8 @@ class MapManager:
         self.current_map_data: Optional[Dict[str, Any]] = None
         self.current_map_key: Optional[str] = None
         
-        # Map connectivity graph (will build in Phase 6C)
-        self.map_connections: Dict[str, List[Dict[str, Any]]] = {}
+        # Map connectivity graph
+        self.map_graph = MapGraph(self.maps_dir)
         
         console.print(f"[yellow]Map Manager initialized. Maps directory: {self.maps_dir}[/]")
     
@@ -400,4 +401,54 @@ class MapManager:
             f"Bounds: ({bounds['min_x']},{bounds['min_y']}) to ({bounds['max_x']},{bounds['max_y']}) | "
             f"Explored: {tiles_explored} ({tiles_walkable}W, {tiles_blocked}N) | "
             f"Visits: {map_data['visit_count']}"
+        )
+
+    def handle_map_transition(
+        self,
+        old_map_key: str,
+        old_position: Tuple[int, int],
+        old_facing: str,
+        new_map_key: str,
+        new_position: Tuple[int, int],
+        new_facing: str
+    ):
+        """
+        Handle a map transition by creating/updating connection.
+
+        Args:
+            old_map_key: Previous map key
+            old_position: Exit tile position
+            old_facing: Direction player was facing when exiting
+            new_map_key: New map key
+            new_position: Entry tile position in new map
+            new_facing: Direction player is facing after entering
+        """
+        exit_tile = old_position
+
+        # Entry tile: one tile back from where the player appeared
+        reverse_dir = {
+            "Up": "Down",
+            "Down": "Up",
+            "Left": "Right",
+            "Right": "Left"
+        }.get(new_facing, new_facing)
+
+        entry_tile_x, entry_tile_y = self.calculate_target_tile(
+            new_position[0],
+            new_position[1],
+            reverse_dir
+        )
+        entry_tile = (entry_tile_x, entry_tile_y)
+
+        self.map_graph.add_connection(
+            old_map_key,
+            exit_tile,
+            new_map_key,
+            entry_tile,
+            old_facing
+        )
+
+        console.print(
+            f"[magenta]Added connection: "
+            f"{old_map_key} {exit_tile} → {new_map_key} {entry_tile}[/]"
         )

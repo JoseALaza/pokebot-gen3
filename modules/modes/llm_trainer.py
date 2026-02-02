@@ -168,7 +168,7 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 6B: Enhanced Outcome Detection[/]")
+        console.print("[yellow]Phase 6C: Map Connectivity Graph[/]")
         console.print("[yellow]Agent will explore and build maps[/]")
         
         while True:
@@ -205,6 +205,7 @@ class LLMTrainerMode(BotMode):
                 )
                 
                 if self.map_manager.current_map_key != current_map_key:
+                    old_map_key = self.map_manager.current_map_key
                     self.map_manager.save_map()  # Save old map if exists
                     self.map_manager.load_map(
                         game_state_before['player']['map'],
@@ -214,6 +215,17 @@ class LLMTrainerMode(BotMode):
                     console.print(f"[magenta]{self.map_manager.get_map_summary()}[/]")
                     # Increment visit count
                     self.map_manager.current_map_data['visit_count'] += 1
+                    # Record map transition
+                    if old_map_key is not None:
+                        self.map_manager.handle_map_transition(
+                            old_map_key,
+                            old_pos,
+                            old_facing,
+                            current_map_key,
+                            (game_state_before['player']['position']['x'],
+                             game_state_before['player']['position']['y']),
+                            old_facing
+                        )
                 
                 # 2. Process vision and update tile map
                 vision_data = self.vision_processor.process_frame()
