@@ -1,0 +1,8 @@
+black television wall_trim wall_trim window window wall_trim wall_trim wall_trim wall_trim wall_trim wall black black black
+black computer floor_tile cabinet bookshelf bookshelf window window window window window sign black black black
+black television desk cabinet shelf bookshelf floor_tile floor_tile stairs stairs floor_tile floor_tile black black black
+black floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile player_right stairs stairs floor_tile floor_tile black black black
+black floor_tile floor_tile floor_tile floor_tile floor_tile window floor_tile floor_tile floor_tile floor_tile floor_tile black black black
+black floor_tile bed floor_tile floor_tile floor_tile game_console floor_tile floor_tile floor_tile floor_tile floor_tile black black black
+black floor_tile bed floor_tile floor_tile floor_tile game_console floor_tile floor_tile floor_tile floor_tile floor_tile black black black
+black floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile black black black

@@ -1,0 +1,8 @@
+black wall_trim wall_trim window window wall_trim tv window window wall_trim wall_trim wall_trim wall_trim black black
+black sink stove window trash_can window window computer sofa window window stairs stairs black black
+black cabinet sink cabinet trash_can floor_tile window floor_tile floor_tile floor_tile floor_tile stairs stairs black black
+black floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile player_left table floor_tile floor_tile stairs stairs black black
+black floor_tile floor_tile floor_tile floor_tile chair table table npc_left floor_tile floor_tile floor_tile floor_tile black black
+black floor_tile floor_tile floor_tile floor_tile chair table table chair floor_tile floor_tile floor_tile floor_tile black black
+black potted_plant floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile potted_plant black black
+black potted_plant floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile potted_plant black black

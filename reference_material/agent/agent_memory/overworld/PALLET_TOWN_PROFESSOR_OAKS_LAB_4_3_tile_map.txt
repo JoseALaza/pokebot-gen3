@@ -1,0 +1,11 @@
+wall wall wall wall_trim wall wall painting painting window wall wall wall wall black black black black
+computer computer computer computer book book sign sign painting bookshelf bookshelf bookshelf bookshelf black black black black
+telephone machine table desk table desk floor_tile player_up floor_tile floor_tile floor_tile floor_tile floor_tile black black black black
+window machine machine floor_tile floor_tile floor_tile npc_right floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile black black black black
+window building path path path path path path path building path path path waterfall building black black
+building building building building building fossil building wall fence fence building building building building building black black
+building building building building building building building building building building building building building building building black black
+wall floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile black black black ?
+bookshelf bookshelf bookshelf bookshelf bookshelf floor_tile floor_tile floor_tile bookshelf bookshelf bookshelf bookshelf bookshelf black black ? ?
+floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile black black ? ?
+wall floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile floor_tile npc_right floor_tile black black ? ?
