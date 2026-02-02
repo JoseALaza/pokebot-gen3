@@ -52,15 +52,18 @@ class LLMTrainerMode(BotMode):
         self.action_executor = ActionExecutor()
         self.map_manager = MapManager()
         
-        # Initialize agent with mock LLM
-        # Try different strategies: "random", "scripted_exit_house", "explore"
+        # Initialize agent
+        # Mock mode: Agent(use_mock=True, mock_strategy="explore")
+        # Real LLM: Agent(use_mock=False, provider="openai", model="gpt-4o-mini")
+        #           Agent(use_mock=False, provider="anthropic", model="claude-sonnet-4-20250514")
+        #           Agent(use_mock=False, provider="gemini", model="gemini-2.0-flash")
         self.agent = Agent(use_mock=True, mock_strategy="explore")
         
         # Decision logger
         self.decision_logger = DecisionLogger(Path(context.profile.path))
         self.decision_logger.set_session_info(
             agent_strategy="explore",
-            llm_provider="mock"
+            llm_provider=self.agent.provider_name
         )
 
         # Shared state for HTTP visualization
@@ -183,7 +186,7 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 8: HTTP Visualization[/]")
+        console.print("[yellow]Phase 9: LLM Integration Complete[/]")
         console.print("[yellow]Agent will explore and build maps[/]")
         session_info_set = False
         

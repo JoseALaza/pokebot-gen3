@@ -158,38 +158,61 @@ class MockLLM:
 class Agent:
     """
     Agent that makes decisions for the LLM Trainer.
-    
+
     Can use:
     - MockLLM for testing (multiple strategies)
-    - Real LLM APIs (future)
+    - Real LLM APIs (openai, anthropic, gemini)
     """
-    
-    def __init__(self, use_mock: bool = True, mock_strategy: str = "random"):
+
+    def __init__(
+        self,
+        use_mock: bool = True,
+        mock_strategy: str = "random",
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None
+    ):
         self.use_mock = use_mock
-        
+        self.provider = None
+        self.provider_name = "mock"
+
         if use_mock:
             self.llm = MockLLM(strategy=mock_strategy)
             console.print(f"[yellow]Agent initialized with Mock LLM[/]")
         else:
-            # TODO: Initialize real LLM
-            raise NotImplementedError("Real LLM not implemented yet")
-        
+            from modules.llm_trainer.llm_providers import create_provider
+            kwargs = {}
+            if model:
+                kwargs["model"] = model
+            if api_key:
+                kwargs["api_key"] = api_key
+            self.provider = create_provider(provider, **kwargs)
+            self.provider_name = provider
+            self.llm = None
+            console.print(f"[yellow]Agent initialized with {provider} ({self.provider.model})[/]")
+
         self.decision_history = []
-        self.total_decisions = 0  # Track total count separately from history
-    
+        self.total_decisions = 0
+
     def decide(self, game_state: Dict[str, Any], vision_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Make a decision based on current state and vision.
-        
+
         Args:
             game_state: Game state from MemoryReader
             vision_data: Vision data from VisionProcessor
-            
+
         Returns:
             Decision dictionary with action, reasoning, metadata
         """
-        # Get decision from LLM (mock or real)
-        decision = self.llm.decide(game_state, vision_data)
+        if self.use_mock:
+            decision = self.llm.decide(game_state, vision_data)
+        else:
+            decision = self.provider.decide(
+                game_state,
+                vision_data,
+                recent_decisions=self.decision_history[-10:]
+            )
         
         # Add metadata
         decision["timestamp"] = datetime.now().isoformat()
@@ -213,3 +236,9 @@ class Agent:
     def get_recent_decisions(self, count: int = 10) -> list[Dict[str, Any]]:
         """Get N most recent decisions"""
         return self.decision_history[-count:]
+
+    def get_provider_stats(self) -> Optional[Dict[str, Any]]:
+        """Get LLM provider usage stats, or None if using mock"""
+        if self.provider is not None:
+            return self.provider.get_usage_stats()
+        return None
