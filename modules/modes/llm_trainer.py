@@ -22,6 +22,7 @@ from modules.llm_trainer.action_executor import ActionExecutor
 from modules.llm_trainer.agent import Agent
 from modules.llm_trainer.map_manager import MapManager
 from modules.llm_trainer.decision_logger import DecisionLogger
+from modules.llm_trainer.llm_state import llm_state
 
 
 class LLMTrainerMode(BotMode):
@@ -61,6 +62,10 @@ class LLMTrainerMode(BotMode):
             agent_strategy="explore",
             llm_provider="mock"
         )
+
+        # Shared state for HTTP visualization
+        llm_state.session_id = self.decision_logger.session_id
+        llm_state.agent_strategy = "explore"
 
         # Tracking
         self.frame_count = 0
@@ -178,7 +183,7 @@ class LLMTrainerMode(BotMode):
         """
         
         console.print("[bold cyan]LLM Trainer mode starting...[/]")
-        console.print("[yellow]Phase 7: Decision Logging[/]")
+        console.print("[yellow]Phase 8: HTTP Visualization[/]")
         console.print("[yellow]Agent will explore and build maps[/]")
         session_info_set = False
         
@@ -385,7 +390,21 @@ class LLMTrainerMode(BotMode):
                     game_state_after=game_state_after
                 )
 
-                # 11. Log decision to console
+                # 11. Update shared state for HTTP visualization
+                llm_state.update(
+                    position={"x": new_pos[0], "y": new_pos[1]},
+                    map_name=new_map,
+                    map_key=self.map_manager.current_map_key or "",
+                    facing=new_facing,
+                    game_state_type="overworld",
+                    total_decisions=self.agent.get_decision_count(),
+                    decision=decision,
+                    outcome=outcome,
+                    map_summary=self.map_manager.get_map_summary(),
+                    map_connections_count=len(self.map_manager.map_graph.connections)
+                )
+
+                # 12. Log decision to console
                 if success:
                     outcome_icon = "✓" if outcome["success"] else "✗"
                     outcome_color = "green" if outcome["success"] else "red"

@@ -42,6 +42,7 @@ from modules.runtime import get_base_path
 from modules.state_cache import state_cache, StateCacheItem
 from modules.version import pokebot_version, pokebot_name
 from modules.web.http_stream import add_subscriber
+from modules.llm_trainer.llm_state import llm_state
 
 custom_state: dict = {}
 
@@ -924,6 +925,121 @@ def http_server(host: str, port: int) -> web.AppRunner:
             )
         ],
     )
+
+    # ── LLM Trainer Endpoints ──────────────────────────────────────────────
+
+    @route.get("/llm/status")
+    async def http_llm_status(request: web.Request):
+        """
+        ---
+        get:
+          description: Returns current LLM trainer status and agent state
+          responses:
+            200:
+              content:
+                application/json: {}
+          tags:
+            - llm
+        """
+        return web.json_response(llm_state.to_dict())
+
+    @route.get("/llm/decisions")
+    async def http_llm_decisions(request: web.Request):
+        """
+        ---
+        get:
+          description: Returns recent LLM agent decisions
+          responses:
+            200:
+              content:
+                application/json: {}
+          tags:
+            - llm
+        """
+        return web.json_response(llm_state.recent_decisions)
+
+    @route.get("/llm/maps/{map_key}")
+    async def http_llm_map(request: web.Request):
+        """
+        ---
+        get:
+          description: Returns map data (tile map and traversal map) for a given map key
+          parameters:
+            - in: path
+              name: map_key
+              required: true
+              schema:
+                type: string
+          responses:
+            200:
+              content:
+                application/json: {}
+          tags:
+            - llm
+        """
+        import json
+        map_key = request.match_info["map_key"]
+        maps_dir = context.profile.path / "llm_trainer" / "maps"
+        map_file = maps_dir / f"{map_key}.json"
+
+        if not map_file.exists():
+            return web.json_response({"error": f"Map {map_key} not found"}, status=404)
+
+        try:
+            with open(map_file, 'r') as f:
+                map_data = json.load(f)
+            return web.json_response(map_data)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @route.get("/llm/maps")
+    async def http_llm_maps_list(request: web.Request):
+        """
+        ---
+        get:
+          description: Returns list of all discovered map keys
+          responses:
+            200:
+              content:
+                application/json: {}
+          tags:
+            - llm
+        """
+        maps_dir = context.profile.path / "llm_trainer" / "maps"
+        if not maps_dir.exists():
+            return web.json_response([])
+
+        map_keys = [f.stem for f in maps_dir.glob("map_*.json")]
+        return web.json_response(sorted(map_keys))
+
+    @route.get("/llm/connections")
+    async def http_llm_connections(request: web.Request):
+        """
+        ---
+        get:
+          description: Returns all map connections
+          responses:
+            200:
+              content:
+                application/json: {}
+          tags:
+            - llm
+        """
+        import json
+        conn_file = context.profile.path / "llm_trainer" / "maps" / "map_connections.json"
+        if not conn_file.exists():
+            return web.json_response({})
+
+        try:
+            with open(conn_file, 'r') as f:
+                data = json.load(f)
+            return web.json_response(data)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @route.get("/llm/map-viewer")
+    async def http_llm_map_viewer(request: web.Request):
+        raise web.HTTPFound(location="/static/llm/index.html")
 
     # Everything until here is considered an API route that should be documented in Swagger.
     for api_route in route:
