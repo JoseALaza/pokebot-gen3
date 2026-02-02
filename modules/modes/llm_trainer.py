@@ -53,22 +53,33 @@ class LLMTrainerMode(BotMode):
         self.map_manager = MapManager()
         
         # Initialize agent
-        # Mock mode: Agent(use_mock=True, mock_strategy="explore")
-        # Real LLM: Agent(use_mock=False, provider="openai", model="gpt-4o-mini")
-        #           Agent(use_mock=False, provider="anthropic", model="claude-sonnet-4-20250514")
-        #           Agent(use_mock=False, provider="gemini", model="gemini-2.0-flash")
-        self.agent = Agent(use_mock=True, mock_strategy="explore")
+        # Strategies: "explore", "random", "scripted_exit_house", "scripted"
+        # Real LLM:   Agent(use_mock=False, provider="openai", model="gpt-4o-mini")
+        self.agent = Agent(use_mock=True, mock_strategy="scripted")
+
+        # ── Define your test script here ──
+        # Valid actions: Up, Down, Left, Right, A, B, WAIT
+        # on_end: "stop" (WAIT forever), "loop" (restart), "explore" (switch to explore)
+        self.agent.llm.set_script([
+            "Down", "Down", "Down", "Down", "Down",  # Exit house
+            "Down", "Down",                            # Walk south in town
+            "Right", "Right", "Right",                 # Walk east
+            "Up", "Up", "Up",                          # Walk north (should hit wall)
+            "Up", "Up",                                # Repeated block test
+            "Left", "A",                               # Turn + interact test
+        ], on_end="stop")
         
         # Decision logger
         self.decision_logger = DecisionLogger(Path(context.profile.path))
+        strategy = self.agent.llm.strategy if self.agent.use_mock else self.agent.provider_name
         self.decision_logger.set_session_info(
-            agent_strategy="explore",
+            agent_strategy=strategy,
             llm_provider=self.agent.provider_name
         )
 
         # Shared state for HTTP visualization
         llm_state.session_id = self.decision_logger.session_id
-        llm_state.agent_strategy = "explore"
+        llm_state.agent_strategy = strategy
 
         # Tracking
         self.frame_count = 0

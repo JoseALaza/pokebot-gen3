@@ -1,7 +1,7 @@
 """Agent - Makes decisions based on game state and vision"""
 
 import random
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from modules.console import console
 
@@ -9,30 +9,55 @@ from modules.console import console
 class MockLLM:
     """
     Mock LLM for testing without API calls.
-    
+
     Implements simple strategies:
     - random: Random walk
     - scripted_exit_house: Hardcoded sequence to exit player's house
+    - scripted: Custom action list (set via set_script())
     - explore: Basic exploration (stay in motion, avoid getting stuck)
     """
-    
-    STRATEGIES = ["random", "scripted_exit_house", "explore"]
-    
+
+    STRATEGIES = ["random", "scripted_exit_house", "scripted", "explore"]
+
+    # What to do when a scripted list is exhausted
+    SCRIPT_END_STOP = "stop"       # WAIT forever
+    SCRIPT_END_LOOP = "loop"       # Restart from beginning
+    SCRIPT_END_EXPLORE = "explore"  # Switch to explore strategy
+
     def __init__(self, strategy: str = "random"):
         if strategy not in self.STRATEGIES:
             raise ValueError(f"Unknown strategy: {strategy}. Valid: {self.STRATEGIES}")
-        
+
         self.strategy = strategy
         self.step_count = 0
-        
+
         # Scripted sequence for exiting player's house in FireRed
-        # Assumes starting position is facing the stairs/door
         self.exit_house_sequence = [
-            "Down", "Down", "Down", "Down", "Down"  # Walk south to exit
+            "Down", "Down", "Down", "Down", "Down"
         ]
         self.sequence_index = 0
-        
+
+        # Custom scripted sequence
+        self.script: List[str] = []
+        self.script_index = 0
+        self.script_on_end: str = self.SCRIPT_END_STOP
+
         console.print(f"[yellow]Mock LLM initialized with strategy: {strategy}[/]")
+
+    def set_script(self, actions: List[str], on_end: str = "stop"):
+        """
+        Set a custom script of actions to execute.
+
+        Args:
+            actions: List of action strings, e.g. ["Down", "Down", "Right", "A"]
+            on_end: What to do when script ends: "stop", "loop", or "explore"
+        """
+        self.script = actions
+        self.script_index = 0
+        self.script_on_end = on_end
+        self.strategy = "scripted"
+        console.print(f"[yellow]Script loaded: {len(actions)} actions, on_end={on_end}[/]")
+        console.print(f"[dim yellow]  Actions: {', '.join(actions[:20])}{'...' if len(actions) > 20 else ''}[/]")
     
     def decide(self, game_state: Dict[str, Any], vision_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -51,6 +76,8 @@ class MockLLM:
             return self._random_walk(game_state, vision_data)
         elif self.strategy == "scripted_exit_house":
             return self._scripted_exit_house(game_state, vision_data)
+        elif self.strategy == "scripted":
+            return self._scripted(game_state, vision_data)
         elif self.strategy == "explore":
             return self._explore(game_state, vision_data)
         else:
@@ -76,6 +103,41 @@ class MockLLM:
             "step": self.step_count
         }
     
+    def _scripted(self, game_state: Dict[str, Any], vision_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute actions from a custom script list.
+
+        Returns:
+            Decision with the next scripted action
+        """
+        if self.script_index >= len(self.script):
+            if self.script_on_end == self.SCRIPT_END_LOOP:
+                self.script_index = 0
+                console.print("[yellow]Script looping from beginning[/]")
+            elif self.script_on_end == self.SCRIPT_END_EXPLORE:
+                console.print("[yellow]Script complete, switching to explore[/]")
+                self.strategy = "explore"
+                return self._explore(game_state, vision_data)
+            else:
+                return {
+                    "action": "WAIT",
+                    "reasoning": f"Script complete ({len(self.script)} actions executed)",
+                    "confidence": 1.0,
+                    "strategy": "scripted",
+                    "step": self.step_count
+                }
+
+        action = self.script[self.script_index]
+        self.script_index += 1
+
+        return {
+            "action": action,
+            "reasoning": f"Script step {self.script_index}/{len(self.script)}: {action}",
+            "confidence": 1.0,
+            "strategy": "scripted",
+            "step": self.step_count
+        }
+
     def _scripted_exit_house(self, game_state: Dict[str, Any], vision_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Scripted sequence to exit player's house.
