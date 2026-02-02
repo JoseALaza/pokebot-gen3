@@ -201,7 +201,7 @@ class LLMTrainerMode(BotMode):
                 vision_data = self.vision_processor.process_frame()
                 
                 # Update tile map with current screen
-                self.map_manager.update_tile_map(
+                self.map_manager.update_tile_map_from_screen(
                     old_pos[0],
                     old_pos[1],
                     vision_data['tile_map']
@@ -265,10 +265,12 @@ class LLMTrainerMode(BotMode):
                 
                 elif outcome["type"] == "blocked":
                     # Calculate target tile and mark as blocked
+                    # BUG FIX: Use the action direction, not current facing
+                    action_direction = decision["action"]
                     target_x, target_y = self.map_manager.calculate_target_tile(
                         old_pos[0],
                         old_pos[1],
-                        old_facing
+                        action_direction  # Use action, not old_facing or new_facing
                     )
                     self.map_manager.set_traversal_at(
                         target_x,

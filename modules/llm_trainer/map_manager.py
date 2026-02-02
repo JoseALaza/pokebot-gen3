@@ -15,8 +15,8 @@ class MapManager:
     Each map area has:
     - tile_map: 2D array of tile names (from vision processor)
     - traversal_map: 2D array of status markers (?, W, N, P, T, I)
-    - Coordinate system starting at (0, 0) for each map
-    - Links to other maps via traversal tiles (T)
+    - Pre-allocated coordinate system based on player's max observed position
+    - Coordinates match game's coordinate system (not relative)
     
     Maps are stored per map_group/map_number combination.
     """
@@ -28,6 +28,9 @@ class MapManager:
     PLAYER = 'P'       # Current player position
     TRAVERSAL = 'T'    # Map transition tile
     INTERACTABLE = 'I' # NPC, sign, or interactable object
+    
+    # Buffer size for pre-allocation beyond observed max
+    GRID_BUFFER = 10
     
     def __init__(self):
         self.maps_dir = self._get_maps_directory()
@@ -52,6 +55,53 @@ class MapManager:
     def _get_map_filepath(self, map_key: str) -> Path:
         """Get filepath for a map's JSON file"""
         return self.maps_dir / f"{map_key}.json"
+    
+    def _ensure_map_size(self, max_x: int, max_y: int, map_data: Optional[Dict[str, Any]] = None):
+        """
+        Ensure map arrays are large enough to accommodate given coordinates.
+        Pre-allocates with buffer for future expansion.
+        
+        Args:
+            max_x: Maximum X coordinate needed
+            max_y: Maximum Y coordinate needed
+            map_data: Map data (uses current if None)
+        """
+        if map_data is None:
+            map_data = self.current_map_data
+        
+        if map_data is None:
+            return
+        
+        # Add buffer for future expansion
+        target_width = max_x + self.GRID_BUFFER + 1
+        target_height = max_y + self.GRID_BUFFER + 1
+        
+        tile_map = map_data["tile_map"]
+        traversal_map = map_data["traversal_map"]
+        
+        # Expand rows
+        while len(tile_map) < target_height:
+            tile_map.append([])
+            traversal_map.append([])
+        
+        # Expand columns in each row
+        for y in range(target_height):
+            # Ensure each row exists
+            if y >= len(tile_map):
+                tile_map.append([])
+            if y >= len(traversal_map):
+                traversal_map.append([])
+            
+            # Expand columns
+            while len(tile_map[y]) < target_width:
+                tile_map[y].append("unknown")
+            while len(traversal_map[y]) < target_width:
+                traversal_map[y].append(self.UNKNOWN)
+        
+        # Update bounds
+        bounds = map_data["bounds"]
+        bounds["max_x"] = max(bounds["max_x"], max_x)
+        bounds["max_y"] = max(bounds["max_y"], max_y)
     
     def load_map(self, map_name: str, map_group: int, map_number: int) -> Dict[str, Any]:
         """
@@ -81,14 +131,14 @@ class MapManager:
                 console.print(f"[red]Error loading map {map_key}: {e}[/]")
                 # Fall through to create new map
         
-        # Create new map
+        # Create new map with empty pre-allocated arrays
         map_data = {
             "map_key": map_key,
             "map_name": map_name,
             "map_group": map_group,
             "map_number": map_number,
-            "tile_map": [],      # 2D array of tile names
-            "traversal_map": [], # 2D array of status markers
+            "tile_map": [],      # Will be pre-allocated on first update
+            "traversal_map": [], # Will be pre-allocated on first update
             "created_at": datetime.now().isoformat(),
             "last_updated": datetime.now().isoformat(),
             "visit_count": 0,
@@ -116,7 +166,7 @@ class MapManager:
             map_data = self.current_map_data
         
         if map_data is None:
-            console.print("[red]No map data to save[/]")
+            console.print("[dim yellow]No map data to save[/]")
             return
         
         map_key = map_data["map_key"]
@@ -206,26 +256,13 @@ class MapManager:
             console.print("[red]No map data to update[/]")
             return
         
-        # Ensure traversal_map is large enough
-        traversal_map = map_data["traversal_map"]
-        
-        # Expand rows if needed
-        while len(traversal_map) <= y:
-            traversal_map.append([])
-        
-        # Expand columns if needed
-        while len(traversal_map[y]) <= x:
-            traversal_map[y].append(self.UNKNOWN)
+        # Ensure map is large enough
+        self._ensure_map_size(x, y, map_data)
         
         # Set the marker
-        traversal_map[y][x] = marker
-        
-        # Update bounds
-        bounds = map_data["bounds"]
-        bounds["max_x"] = max(bounds["max_x"], x)
-        bounds["max_y"] = max(bounds["max_y"], y)
+        map_data["traversal_map"][y][x] = marker
     
-    def update_tile_map(
+    def update_tile_map_from_screen(
         self,
         player_x: int,
         player_y: int,
@@ -233,12 +270,16 @@ class MapManager:
         map_data: Optional[Dict[str, Any]] = None
     ):
         """
-        Update tile map with new screen tiles centered on player.
+        Update tile map with screen tiles from vision processor.
+        Maps screen-relative coordinates to world coordinates.
+        
+        Important: Screen tiles are 9x15 (after cropping margins).
+        Player is at center: row=4, col=7 (0-indexed).
         
         Args:
             player_x: Player world X coordinate
             player_y: Player world Y coordinate
-            screen_tiles: 2D array of tile names from vision processor
+            screen_tiles: 2D array of tile names from vision (9 rows x 15 cols)
             map_data: Map data (uses current if None)
         """
         if map_data is None:
@@ -248,70 +289,78 @@ class MapManager:
             console.print("[red]No map data to update[/]")
             return
         
-        tile_map = map_data["tile_map"]
-        
-        # Screen dimensions (from vision processor)
+        # Screen dimensions from vision processor (9 rows x 15 cols)
         screen_height = len(screen_tiles)
         screen_width = len(screen_tiles[0]) if screen_tiles else 0
         
-        # Calculate top-left corner of screen in world coordinates
+        if screen_height == 0 or screen_width == 0:
+            return
+        
         # Player is at center of screen
-        top_left_x = player_x - (screen_width // 2)
-        top_left_y = player_y - (screen_height // 2)
+        player_screen_row = 4  # Center row (0-indexed: 0,1,2,3,4,5,6,7,8)
+        player_screen_col = 7  # Center col (0-indexed: 0-14)
         
-        # Update tile map
-        for screen_y in range(screen_height):
-            for screen_x in range(screen_width):
-                world_x = top_left_x + screen_x
-                world_y = top_left_y + screen_y
-                
-                # Skip negative coordinates
-                if world_x < 0 or world_y < 0:
-                    continue
-                
-                # Expand tile_map if needed
-                while len(tile_map) <= world_y:
-                    tile_map.append([])
-                
-                while len(tile_map[world_y]) <= world_x:
-                    tile_map[world_y].append("unknown")
-                
-                # Set tile
-                tile_name = screen_tiles[screen_y][screen_x]
-                tile_map[world_y][world_x] = tile_name
+        # Calculate top-left corner of screen in world coordinates
+        screen_top_left_x = player_x - player_screen_col
+        screen_top_left_y = player_y - player_screen_row
         
-        # Update bounds
-        bounds = map_data["bounds"]
-        bounds["max_x"] = max(bounds["max_x"], player_x + (screen_width // 2))
-        bounds["max_y"] = max(bounds["max_y"], player_y + (screen_height // 2))
+        # Calculate max coordinates we'll need
+        max_x = screen_top_left_x + screen_width - 1
+        max_y = screen_top_left_y + screen_height - 1
+        
+        # Ensure map is large enough
+        self._ensure_map_size(max_x, max_y, map_data)
+        
+        tile_map = map_data["tile_map"]
+        traversal_map = map_data["traversal_map"]
+        
+        # Map each screen tile to world coordinates
+        for screen_row in range(screen_height):
+            for screen_col in range(screen_width):
+                world_x = screen_top_left_x + screen_col
+                world_y = screen_top_left_y + screen_row
+                
+                # Only update non-negative coordinates
+                if world_x >= 0 and world_y >= 0:
+                    tile_name = screen_tiles[screen_row][screen_col]
+                    
+                    # Update tile_map (always overwrite with latest)
+                    tile_map[world_y][world_x] = tile_name
+                    
+                    # Initialize traversal_map for newly discovered tiles
+                    # Keep as '?' until player tries to walk there
+                    if traversal_map[world_y][world_x] == self.UNKNOWN:
+                        # Keep as unknown - will be updated by movement attempts
+                        pass
     
     def calculate_target_tile(
         self,
         player_x: int,
         player_y: int,
-        facing: str
+        direction: str
     ) -> Tuple[int, int]:
         """
-        Calculate the tile the player would move to if they walked forward.
+        Calculate the tile coordinates in the given direction from player.
         
         Args:
             player_x: Player X coordinate
             player_y: Player Y coordinate
-            facing: Direction player is facing ("Up", "Down", "Left", "Right")
+            direction: Direction ("Up", "Down", "Left", "Right")
             
         Returns:
             (target_x, target_y) tuple
         """
-        if facing == "Up":
+        if direction == "Up":
             return (player_x, player_y - 1)
-        elif facing == "Down":
+        elif direction == "Down":
             return (player_x, player_y + 1)
-        elif facing == "Left":
+        elif direction == "Left":
             return (player_x - 1, player_y)
-        elif facing == "Right":
+        elif direction == "Right":
             return (player_x + 1, player_y)
         else:
-            # Unknown facing, return same position
+            # Unknown direction, return same position
+            console.print(f"[yellow]Warning: Unknown direction '{direction}'[/]")
             return (player_x, player_y)
     
     def get_map_summary(self, map_data: Optional[Dict[str, Any]] = None) -> str:
@@ -332,16 +381,22 @@ class MapManager:
         
         bounds = map_data["bounds"]
         tiles_explored = 0
+        tiles_walkable = 0
+        tiles_blocked = 0
         
-        # Count explored tiles
+        # Count tile types
         for row in map_data["traversal_map"]:
             for marker in row:
                 if marker != self.UNKNOWN:
                     tiles_explored += 1
+                if marker == self.WALKABLE or marker == self.PLAYER:
+                    tiles_walkable += 1
+                elif marker == self.BLOCKED:
+                    tiles_blocked += 1
         
         return (
             f"{map_data['map_name']} | "
             f"Bounds: ({bounds['min_x']},{bounds['min_y']}) to ({bounds['max_x']},{bounds['max_y']}) | "
-            f"Explored: {tiles_explored} tiles | "
+            f"Explored: {tiles_explored} ({tiles_walkable}W, {tiles_blocked}N) | "
             f"Visits: {map_data['visit_count']}"
         )
