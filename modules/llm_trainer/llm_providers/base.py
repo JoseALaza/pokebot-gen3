@@ -7,31 +7,50 @@ from typing import Dict, Any, Optional, List
 from textwrap import dedent
 
 
-# System prompt for Pokemon gameplay
+# Comprehensive system prompt for Pokemon gameplay
 POKEMON_SYSTEM_PROMPT = dedent("""
-    You are playing Pokemon FireRed. You control a character in the overworld.
+    You are an AI playing Pokemon FireRed. You control a trainer in the overworld.
 
-    You receive:
-    - Player position (x, y), facing direction, current map
-    - A tile map showing what's around you (9x15 grid, you're at center)
-    - A traversal map showing where you can/can't walk (W=walkable, N=blocked, ?=unknown, P=you, T=transition, L=ledge)
-    - Your Pokemon party info
-    - Recent decision history
+    ## Game Mechanics
+    - Movement: Up/Down/Left/Right moves one tile in that direction
+    - In Pokemon, pressing a direction when NOT facing it will TURN you first (no movement)
+    - Press the same direction again to actually MOVE after turning
+    - A button: Interact with NPCs, read signs, pick up items, confirm dialogues
+    - B button: Cancel, exit menus, speed up text
+    - Ledges (L): Can only jump DOWN ledges, not up/sideways
 
-    You must respond with EXACTLY one JSON object:
+    ## Map Information You Receive
+    1. **Tile Map**: Shows terrain types (floor, wall, grass, water, npc, etc.)
+    2. **Traversal Map**: Shows movement possibilities:
+       - W = Walkable (confirmed you can walk here)
+       - N = Blocked (confirmed obstacle - wall, object, NPC)
+       - ? = Unknown (not yet explored)
+       - P = Your current position
+       - T = Transition (door, stairs, cave entrance - leads to another map)
+       - I = Interactable (NPC, sign, or object you can interact with using A)
+       - L = Ledge (can jump down only)
+
+    ## Decision History
+    You'll see your recent decisions with their OUTCOMES:
+    - ✓ = Success (moved, interacted, etc.)
+    - ✗ = Failed (blocked, couldn't move)
+    - ⟳ = Turned (faced new direction but didn't move yet)
+
+    ## Your Response
+    Respond with EXACTLY one JSON object:
     {
         "action": "Up|Down|Left|Right|A|B|WAIT",
-        "reasoning": "Brief explanation of why"
+        "reasoning": "Brief explanation (1 sentence)"
     }
 
-    Rules:
-    - Choose one action per turn
-    - Explore unknown areas (? tiles) to map them
-    - Avoid repeatedly hitting walls (N tiles)
-    - Use A to interact with NPCs, signs, doors
-    - Use transitions (T tiles) to move between maps
-    - Your goal is to progress through the game: explore, battle, collect badges
-    - Be strategic about movement - don't wander randomly
+    ## Strategy Tips
+    - LEARN FROM FAILURES: If an action was blocked (✗), don't repeat it!
+    - EXPLORE: Move toward ? tiles to map unknown areas
+    - USE TRANSITIONS: T tiles are doors/exits - walk into them to change maps
+    - INTERACT: Use A when facing NPCs (I tiles) or to check objects
+    - DON'T GET STUCK: If blocked in one direction, try another
+    - REMEMBER: After turning, you need to press the same direction again to move
+    - PROGRESS: Your goal is to explore, battle trainers, and collect gym badges
 """).strip()
 
 
@@ -39,48 +58,186 @@ def build_user_prompt(
     game_state: Dict[str, Any],
     vision_data: Dict[str, Any],
     recent_decisions: List[Dict[str, Any]],
-    map_summary: Optional[str] = None
+    map_summary: Optional[str] = None,
+    traversal_context: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Build the user prompt with current game context."""
+    """
+    Build comprehensive user prompt with full game context.
+
+    Args:
+        game_state: Current game state from MemoryReader
+        vision_data: Vision data including tile_map and traversal_map
+        recent_decisions: Recent decisions WITH outcomes
+        map_summary: Current map exploration summary
+        traversal_context: Additional context about surroundings
+    """
     player = game_state.get("player", {})
     pos = player.get("position", {})
+    facing = player.get("facing", "Down")
     party = game_state.get("party", [])
 
-    # Format tile map as compact grid
+    # Build position and state section
+    state_lines = [
+        f"Position: ({pos.get('x', '?')}, {pos.get('y', '?')})",
+        f"Facing: {facing}",
+        f"Map: {player.get('map', '?')}",
+    ]
+    if map_summary:
+        state_lines.append(f"Exploration: {map_summary}")
+
+    # Format traversal map (shows W/N/?/P/T/I/L markers)
+    traversal_map = vision_data.get("traversal_map", [])
+    traversal_str = ""
+    if traversal_map:
+        for row in traversal_map:
+            traversal_str += " ".join(row) + "\n"
+
+    # Format tile map (shows terrain types) - more compact
     tile_map = vision_data.get("tile_map", [])
     tile_str = ""
     if tile_map:
         for row in tile_map:
-            tile_str += " ".join(t[:4].ljust(4) for t in row) + "\n"
+            # Abbreviate tile names to 3 chars for readability
+            tile_str += " ".join(t[:3].ljust(3) for t in row) + "\n"
 
-    # Format recent decisions
+    # Analyze what's in each direction from player position
+    direction_info = _analyze_directions(traversal_map, tile_map, facing)
+
+    # Format recent decisions WITH outcomes
     history = ""
-    for d in recent_decisions[-5:]:
-        history += f"  #{d.get('decision_number', '?')}: {d.get('action', '?')} -> {d.get('reasoning', '')}\n"
+    for d in recent_decisions[-8:]:  # Show last 8 decisions
+        num = d.get('decision_number', '?')
+        action = d.get('action', '?')
+        outcome = d.get('outcome', {})
 
-    # Format party
+        # Determine outcome symbol
+        if outcome.get('type') == 'blocked':
+            symbol = "✗"
+            result = "BLOCKED"
+        elif outcome.get('type') == 'turn':
+            symbol = "⟳"
+            result = f"turned to face {action}"
+        elif outcome.get('type') == 'movement':
+            symbol = "✓"
+            result = outcome.get('reason', 'moved')[:40]
+        elif outcome.get('type') == 'map_change':
+            symbol = "✓"
+            result = "entered new area"
+        elif outcome.get('type') == 'interaction':
+            symbol = "✓"
+            result = "triggered dialogue (A press)"
+        elif outcome.get('type') == 'auto_dialogue':
+            symbol = "💬"
+            result = "stepped on trigger - auto dialogue!"
+        elif outcome.get('success', True):
+            symbol = "✓"
+            result = outcome.get('reason', 'ok')[:40]
+        else:
+            symbol = "?"
+            result = outcome.get('reason', '')[:40]
+
+        reasoning = d.get('reasoning', '')[:50]
+        history += f"  {symbol} #{num}: {action:5} | {result}\n"
+
+    # Format party (brief)
     party_str = ""
-    for p in party[:3]:
-        party_str += f"  {p.get('species', '?')} Lv{p.get('level', '?')} HP:{p.get('hp', {}).get('current', '?')}/{p.get('hp', {}).get('max', '?')}\n"
+    for i, p in enumerate(party[:6]):
+        species = p.get('species', '?')
+        level = p.get('level', '?')
+        hp = p.get('hp', {})
+        hp_cur = hp.get('current', '?')
+        hp_max = hp.get('max', '?')
+        party_str += f"  {i+1}. {species} Lv{level} ({hp_cur}/{hp_max} HP)\n"
 
-    return dedent(f"""
-        Current State:
-        - Position: ({pos.get('x', '?')}, {pos.get('y', '?')})
-        - Facing: {player.get('facing', '?')}
-        - Map: {player.get('map', '?')}
-        {f'- Map Info: {map_summary}' if map_summary else ''}
+    # Build known connections info
+    connections_str = ""
+    if traversal_context and traversal_context.get('connections'):
+        connections_str = "\nKnown Exits:\n"
+        for conn in traversal_context['connections'][:5]:
+            connections_str += f"  - {conn.get('direction', '?')}: leads to {conn.get('target_map', '?')}\n"
 
-        Party:
-        {party_str or '  (none)'}
+    # Build the full prompt
+    prompt = f"""## Current State
+{chr(10).join('- ' + line for line in state_lines)}
 
-        Tile Map (you are at center):
-        {tile_str or '  (no vision data)'}
+## What's Around You (each direction from your position)
+{direction_info}
 
-        Recent Decisions:
-        {history or '  (none)'}
+## Traversal Map (5x5 around you, P=you, W=walkable, N=blocked, ?=unknown, T=transition, I=interact)
+{traversal_str.strip() if traversal_str else '(no traversal data)'}
 
-        Choose your next action. Respond with JSON only.
-    """).strip()
+## Tile Map (terrain types)
+{tile_str.strip() if tile_str else '(no tile data)'}
+
+## Your Pokemon
+{party_str.strip() if party_str else '(no pokemon)'}
+
+## Recent Actions & Results
+{history.strip() if history else '(first decision)'}
+{connections_str}
+## Your Turn
+Based on the above, what's your next action? Remember:
+- Don't repeat blocked actions
+- Explore unknown (?) areas
+- Use T tiles to change maps
+Respond with JSON: {{"action": "...", "reasoning": "..."}}"""
+
+    return prompt
+
+
+def _analyze_directions(traversal_map: List[List[str]], tile_map: List[List[str]], facing: str) -> str:
+    """Analyze what's in each cardinal direction from player."""
+    if not traversal_map:
+        return "(no map data)"
+
+    # Find player position (P) in traversal map
+    player_y, player_x = None, None
+    for y, row in enumerate(traversal_map):
+        for x, cell in enumerate(row):
+            if cell == 'P':
+                player_y, player_x = y, x
+                break
+        if player_y is not None:
+            break
+
+    if player_y is None:
+        return "(player position not found)"
+
+    directions = {
+        "Up": (player_y - 1, player_x),
+        "Down": (player_y + 1, player_x),
+        "Left": (player_y, player_x - 1),
+        "Right": (player_y, player_x + 1)
+    }
+
+    marker_meanings = {
+        'W': 'walkable',
+        'N': 'BLOCKED',
+        '?': 'unknown',
+        'T': 'TRANSITION (exit/door)',
+        'I': 'interactable',
+        'L': 'ledge'
+    }
+
+    result_lines = []
+    for dir_name, (y, x) in directions.items():
+        # Check bounds
+        if 0 <= y < len(traversal_map) and 0 <= x < len(traversal_map[0]):
+            marker = traversal_map[y][x]
+            meaning = marker_meanings.get(marker, marker)
+
+            # Get tile type if available
+            tile_type = ""
+            if tile_map and 0 <= y < len(tile_map) and 0 <= x < len(tile_map[0]):
+                tile_type = f" ({tile_map[y][x]})"
+
+            # Mark if this is the direction we're facing
+            facing_marker = " ← facing" if dir_name == facing else ""
+            result_lines.append(f"- {dir_name}: {meaning}{tile_type}{facing_marker}")
+        else:
+            result_lines.append(f"- {dir_name}: out of bounds")
+
+    return "\n".join(result_lines)
 
 
 def parse_llm_response(response_text: str) -> Dict[str, Any]:
@@ -163,16 +320,18 @@ class BaseLLMProvider(ABC):
         game_state: Dict[str, Any],
         vision_data: Dict[str, Any],
         recent_decisions: Optional[List[Dict[str, Any]]] = None,
-        map_summary: Optional[str] = None
+        map_summary: Optional[str] = None,
+        traversal_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Make a gameplay decision using the LLM.
 
         Args:
             game_state: Current game state
-            vision_data: Vision processor output
-            recent_decisions: Recent decision history
+            vision_data: Vision processor output (should include traversal_map)
+            recent_decisions: Recent decision history WITH outcomes
             map_summary: Current map summary string
+            traversal_context: Additional context (connections, etc.)
 
         Returns:
             Decision dict with action and reasoning
@@ -181,7 +340,8 @@ class BaseLLMProvider(ABC):
             game_state,
             vision_data,
             recent_decisions or [],
-            map_summary
+            map_summary,
+            traversal_context
         )
 
         try:

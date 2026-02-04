@@ -256,13 +256,21 @@ class Agent:
         self.decision_history = []
         self.total_decisions = 0
 
-    def decide(self, game_state: Dict[str, Any], vision_data: Dict[str, Any]) -> Dict[str, Any]:
+    def decide(
+        self,
+        game_state: Dict[str, Any],
+        vision_data: Dict[str, Any],
+        map_summary: Optional[str] = None,
+        traversal_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
         Make a decision based on current state and vision.
 
         Args:
             game_state: Game state from MemoryReader
-            vision_data: Vision data from VisionProcessor
+            vision_data: Vision data from VisionProcessor (should include traversal_map)
+            map_summary: Current map exploration summary string
+            traversal_context: Additional context like known connections
 
         Returns:
             Decision dictionary with action, reasoning, metadata
@@ -273,23 +281,36 @@ class Agent:
             decision = self.provider.decide(
                 game_state,
                 vision_data,
-                recent_decisions=self.decision_history[-10:]
+                recent_decisions=self.decision_history[-10:],
+                map_summary=map_summary,
+                traversal_context=traversal_context
             )
-        
+
         # Add metadata
         decision["timestamp"] = datetime.now().isoformat()
         decision["frame"] = game_state.get("frame", 0)
         decision["decision_number"] = self.total_decisions + 1
-        
+
         # Store in history (keep last 100 for memory efficiency)
         self.decision_history.append(decision)
         if len(self.decision_history) > 100:
             self.decision_history = self.decision_history[-100:]
-        
+
         # Increment total counter
         self.total_decisions += 1
-        
+
         return decision
+
+    def update_last_decision_outcome(self, outcome: Dict[str, Any]):
+        """
+        Update the most recent decision with its outcome.
+        This is called after the action is executed and we know the result.
+
+        Args:
+            outcome: The outcome dict from _check_action_outcome
+        """
+        if self.decision_history:
+            self.decision_history[-1]["outcome"] = outcome
     
     def get_decision_count(self) -> int:
         """Get total number of decisions made (not capped)"""

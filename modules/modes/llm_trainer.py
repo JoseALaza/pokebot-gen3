@@ -54,16 +54,19 @@ class LLMTrainerMode(BotMode):
         
         # Initialize agent
         # Strategies: "explore", "random", "scripted_exit_house", "scripted"
+        # self.agent = Agent(use_mock=True, mock_strategy="scripted")
         # Real LLM:   Agent(use_mock=False, provider="openai", model="gpt-4o-mini")
-        self.agent = Agent(use_mock=True, mock_strategy="scripted")
+        self.agent = Agent(use_mock=False, provider="gemini", api_key="AIzaSyCh4LFHeVnx8v1PM340I-M_yV3e5FlUfU4")
+        
 
-        # ── Define your test script here ──
+        # ── Define your test script here (only for MockLLM) ──
         # Valid actions: Up, Down, Left, Right, A, B, WAIT
         # on_end: "stop" (WAIT forever), "loop" (restart), "explore" (switch to explore)
-        self.agent.llm.set_script([
-            "Left", "Left", "A"                           # Turn + interact test
-        ], on_end="stop")
-        
+        if self.agent.use_mock:
+            self.agent.llm.set_script([
+                "Up"                           # Turn + interact test
+            ], on_end="stop")
+
         # Decision logger
         self.decision_logger = DecisionLogger(Path(context.profile.path))
         strategy = self.agent.llm.strategy if self.agent.use_mock else self.agent.provider_name
@@ -202,6 +205,22 @@ class LLMTrainerMode(BotMode):
                 # 0. Check if we're in a non-overworld state
                 game_state_type = self.memory_reader.get_game_state_type()
 
+                # Debug: Show raw game state on first few frames
+                if self.frame_count < 500:
+                    from modules.memory import get_game_state
+                    from modules.tasks import get_global_script_context
+                    raw_state = get_game_state()
+                    script_ctx = get_global_script_context()
+                    try:
+                        player = self.memory_reader.get_player_state()
+                        console.print(
+                            f"[dim]Frame {self.frame_count}: raw={raw_state.name} | "
+                            f"type={game_state_type} | pos=({player.x},{player.y}) | "
+                            f"map={player.map_name}[/]"
+                        )
+                    except Exception as e:
+                        console.print(f"[dim]Frame {self.frame_count}: raw={raw_state.name} | type={game_state_type} | player error: {e}[/]")
+
                 if game_state_type == "battle":
                     console.print("[red]In battle! Pausing LLM decisions.[/]")
                     self.last_decision_frame = self.frame_count
@@ -219,11 +238,64 @@ class LLMTrainerMode(BotMode):
                     continue
 
                 elif game_state_type == "dialogue":
-                    console.print("[cyan]Dialogue active. Pressing A to advance.[/]")
-                    self.action_executor.execute("A")
-                    for _ in range(10):
-                        yield
-                        self.frame_count += 1
+                    # Smart dialogue handling: keep pressing A until we exit dialogue
+                    # or hit the max attempts limit
+                    dialogue_presses = 0
+                    max_dialogue_presses = 50  # Safety limit
+
+                    # Debug: show initial state
+                    from modules.tasks import get_global_script_context
+                    script_ctx = get_global_script_context()
+                    console.print(f"[cyan]Dialogue detected. Script: {script_ctx.native_function_name}[/]")
+                    console.print(f"[dim]  Stack: {script_ctx.stack[:3]}...[/]")
+
+                    while dialogue_presses < max_dialogue_presses:
+                        # Press A to advance
+                        self.action_executor.execute("A")
+                        dialogue_presses += 1
+
+                        # Wait for text to finish printing or dialogue to exit
+                        # Check every few frames if we're still in dialogue
+                        frames_without_dialogue = 0
+                        for wait_frame in range(30):  # Wait up to 30 frames per press
+                            yield
+                            self.frame_count += 1
+
+                            # Check if dialogue ended
+                            is_active = self.memory_reader.is_dialogue_active()
+                            if not is_active:
+                                frames_without_dialogue += 1
+                                # Need several frames of "no dialogue" to confirm we're out
+                                if frames_without_dialogue >= 5:
+                                    console.print(f"[green]Dialogue ended after {dialogue_presses} presses.[/]")
+                                    break
+                            else:
+                                frames_without_dialogue = 0
+
+                        # If we got 5+ frames without dialogue, we're done
+                        if frames_without_dialogue >= 5:
+                            break
+
+                        # Debug: show state every 10 presses
+                        if dialogue_presses % 10 == 0:
+                            script_ctx = get_global_script_context()
+                            game_st = self.memory_reader.get_game_state_type()
+                            is_active = self.memory_reader.is_dialogue_active()
+                            console.print(
+                                f"[cyan]Still in dialogue... ({dialogue_presses}x) | "
+                                f"game_state={game_st} | is_active={is_active}[/]"
+                            )
+                            console.print(f"[dim]  Script: {script_ctx.native_function_name} | Stack: {script_ctx.stack[:2]}[/]")
+
+                    if dialogue_presses >= max_dialogue_presses:
+                        console.print(f"[yellow]Dialogue limit reached ({max_dialogue_presses}). Trying B to exit.[/]")
+                        # Try pressing B several times to force exit
+                        for _ in range(10):
+                            self.action_executor.execute("B")
+                            for _ in range(5):
+                                yield
+                                self.frame_count += 1
+
                     self.last_decision_frame = self.frame_count
                     continue
 
@@ -293,14 +365,14 @@ class LLMTrainerMode(BotMode):
                 
                 # 2. Process vision and update tile map
                 vision_data = self.vision_processor.process_frame()
-                
+
                 # Update tile map with current screen
                 self.map_manager.update_tile_map_from_screen(
                     old_pos[0],
                     old_pos[1],
                     vision_data['tile_map']
                 )
-                
+
                 # Mark current position as player (but preserve traversal markers)
                 current_marker = self.map_manager.get_traversal_at(old_pos[0], old_pos[1])
                 if current_marker != self.map_manager.TRAVERSAL:
@@ -309,9 +381,38 @@ class LLMTrainerMode(BotMode):
                         old_pos[1],
                         self.map_manager.PLAYER
                     )
-                
+
+                # 2b. Add traversal map view to vision_data for LLM context
+                vision_data['traversal_map'] = self.map_manager.get_traversal_view(
+                    old_pos[0], old_pos[1], radius=4
+                )
+                # Also add the tile view from map_manager (may differ from screen vision)
+                vision_data['tile_view'] = self.map_manager.get_tile_view(
+                    old_pos[0], old_pos[1], radius=4
+                )
+
+                # 2c. Build traversal context with connections info
+                traversal_context = {
+                    'connections': []
+                }
+                # Get known connections from current map
+                if self.map_manager.current_map_key:
+                    for conn in self.map_manager.map_graph.connections:
+                        if conn['from_map'] == self.map_manager.current_map_key:
+                            traversal_context['connections'].append({
+                                'direction': conn['direction'],
+                                'exit_tile': conn['from_tile'],
+                                'target_map': conn['to_map']
+                            })
+
                 # 3. Agent makes decision
-                decision = self.agent.decide(game_state_before, vision_data)
+                map_summary = self.map_manager.get_map_summary()
+                decision = self.agent.decide(
+                    game_state_before,
+                    vision_data,
+                    map_summary=map_summary,
+                    traversal_context=traversal_context
+                )
                 
                 # 4. Execute action
                 success = self.action_executor.execute(decision["action"])
@@ -432,6 +533,33 @@ class LLMTrainerMode(BotMode):
                             f"[green]  → Marked tile ({target_x}, {target_y}) as INTERACTABLE[/]"
                         )
 
+                # 7b2. Check if movement triggered auto-dialogue (walk-on trigger tiles)
+                # Some tiles (signs walked into, trigger NPCs) start dialogue without A press
+                if outcome["type"] == "movement":
+                    # Brief check for auto-dialogue (these trigger faster than A-press dialogue)
+                    auto_dialogue_detected = False
+                    for dialogue_check in range(60):  # Wait up to 60 frames (~1 second)
+                        yield
+                        self.frame_count += 1
+                        if self.memory_reader.is_dialogue_active():
+                            auto_dialogue_detected = True
+                            break
+
+                    if auto_dialogue_detected:
+                        outcome["type"] = "auto_dialogue"
+                        outcome["reason"] = "Stepped on trigger tile - dialogue appeared automatically"
+                        # Mark the tile we moved TO as interactable (auto-trigger)
+                        self.map_manager.set_traversal_at(
+                            new_pos[0], new_pos[1],
+                            self.map_manager.INTERACTABLE
+                        )
+                        console.print(
+                            f"[cyan]  → Auto-dialogue triggered! Marked tile ({new_pos[0]}, {new_pos[1]}) as INTERACTABLE[/]"
+                        )
+
+                # 7c. Update the decision with its outcome (for LLM learning)
+                self.agent.update_last_decision_outcome(outcome)
+
                 # 8. Update traversal map based on outcome
                 if outcome["type"] == "movement":
                     distance = abs(new_pos[0] - old_pos[0]) + abs(new_pos[1] - old_pos[1])
@@ -461,6 +589,19 @@ class LLMTrainerMode(BotMode):
                         self.map_manager.PLAYER
                     )
                     # Reset blocked tracking on successful movement
+                    self.last_blocked_tile = None
+
+                elif outcome["type"] == "auto_dialogue":
+                    # Movement that triggered auto-dialogue
+                    # Mark old position as walkable (we came from there)
+                    old_marker = self.map_manager.get_traversal_at(old_pos[0], old_pos[1])
+                    if old_marker != self.map_manager.TRAVERSAL:
+                        self.map_manager.set_traversal_at(
+                            old_pos[0], old_pos[1],
+                            self.map_manager.WALKABLE
+                        )
+                    # New position already marked as INTERACTABLE in step 7b2
+                    # Don't overwrite it with PLAYER
                     self.last_blocked_tile = None
 
                 elif outcome["type"] == "turn":

@@ -443,27 +443,95 @@ class MapManager:
             console.print(f"[yellow]Warning: Unknown direction '{direction}'[/]")
             return (player_x, player_y)
     
+    def get_traversal_view(
+        self,
+        player_x: int,
+        player_y: int,
+        radius: int = 4,
+        map_data: Optional[Dict[str, Any]] = None
+    ) -> List[List[str]]:
+        """
+        Get a view of the traversal map centered on the player.
+
+        Args:
+            player_x: Player world X coordinate
+            player_y: Player world Y coordinate
+            radius: How many tiles in each direction (default 4 = 9x9 grid)
+            map_data: Map data (uses current if None)
+
+        Returns:
+            2D array of traversal markers, player at center
+        """
+        if map_data is None:
+            map_data = self.current_map_data
+
+        view = []
+        for dy in range(-radius, radius + 1):
+            row = []
+            for dx in range(-radius, radius + 1):
+                world_x = player_x + dx
+                world_y = player_y + dy
+                marker = self.get_traversal_at(world_x, world_y, map_data)
+                row.append(marker)
+            view.append(row)
+
+        return view
+
+    def get_tile_view(
+        self,
+        player_x: int,
+        player_y: int,
+        radius: int = 4,
+        map_data: Optional[Dict[str, Any]] = None
+    ) -> List[List[str]]:
+        """
+        Get a view of the tile map centered on the player.
+
+        Args:
+            player_x: Player world X coordinate
+            player_y: Player world Y coordinate
+            radius: How many tiles in each direction (default 4 = 9x9 grid)
+            map_data: Map data (uses current if None)
+
+        Returns:
+            2D array of tile names, player at center
+        """
+        if map_data is None:
+            map_data = self.current_map_data
+
+        view = []
+        for dy in range(-radius, radius + 1):
+            row = []
+            for dx in range(-radius, radius + 1):
+                world_x = player_x + dx
+                world_y = player_y + dy
+                tile = self.get_tile_at(world_x, world_y, map_data)
+                row.append(tile if tile else "unknown")
+            view.append(row)
+
+        return view
+
     def get_map_summary(self, map_data: Optional[Dict[str, Any]] = None) -> str:
         """
         Get a summary string of the map.
-        
+
         Args:
             map_data: Map data (uses current if None)
-            
+
         Returns:
             Summary string
         """
         if map_data is None:
             map_data = self.current_map_data
-        
+
         if map_data is None:
             return "No map loaded"
-        
+
         bounds = map_data["bounds"]
         tiles_explored = 0
         tiles_walkable = 0
         tiles_blocked = 0
-        
+
         # Count tile types
         for row in map_data["traversal_map"]:
             for marker in row:
@@ -473,7 +541,7 @@ class MapManager:
                     tiles_walkable += 1
                 elif marker == self.BLOCKED:
                     tiles_blocked += 1
-        
+
         return (
             f"{map_data['map_name']} | "
             f"Bounds: ({bounds['min_x']},{bounds['min_y']}) to ({bounds['max_x']},{bounds['max_y']}) | "

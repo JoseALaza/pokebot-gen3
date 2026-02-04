@@ -7,7 +7,8 @@ from modules.memory import get_game_state_symbol, get_game_state, GameState
 from modules.player import get_player_avatar
 from modules.pokemon_party import get_party
 from modules.map import get_map_data_for_current_position
-from modules.tasks import is_waiting_for_input
+from modules.tasks import is_waiting_for_input, get_global_script_context
+from modules.memory import read_symbol
 from modules.keyboard import get_naming_screen_data, NamingScreenState
 
 
@@ -195,8 +196,9 @@ class MemoryReader:
             return "naming_screen"
 
         # Check for dialogue (player in overworld but waiting for input)
+        # Use our improved is_dialogue_active() which validates script context
         if game_state == GameState.OVERWORLD:
-            if is_waiting_for_input():
+            if self.is_dialogue_active():
                 return "dialogue"
             return "overworld"
 
@@ -216,10 +218,35 @@ class MemoryReader:
         """
         Check if dialogue/text box is currently active and waiting for input.
 
+        More robust than just is_waiting_for_input() - also validates that
+        there's actually a script running or text printer active.
+
         Returns:
             True if dialogue is waiting for A/B press
         """
-        return is_waiting_for_input()
+        # First check the standard function
+        if not is_waiting_for_input():
+            return False
+
+        # Validate that there's actually a script running
+        # A stack with just '0x0' means no real script
+        script_ctx = get_global_script_context()
+        if script_ctx.native_function_name == "WaitForAorBPress":
+            # Check if stack is valid (not just null pointers)
+            stack = script_ctx.stack
+            if not stack or all(s == '0x0' or s == '' for s in stack):
+                # No valid stack - this might be a false positive
+                # Double-check with text printer state for FRLG
+                try:
+                    text_printer_data = read_symbol("sTextPrinters", offset=0x1B, size=2)
+                    text_printer_is_active = text_printer_data[0]
+                    text_printer_state = text_printer_data[1]
+                    # States 2 (Clear) and 3 (ScrollStart) mean waiting for button
+                    return text_printer_is_active and text_printer_state in (2, 3)
+                except:
+                    return False
+
+        return True
 
     def get_naming_screen_info(self) -> Optional[Dict[str, Any]]:
         """
