@@ -7,6 +7,8 @@ from modules.memory import get_game_state_symbol, get_game_state, GameState
 from modules.player import get_player_avatar
 from modules.pokemon_party import get_party
 from modules.map import get_map_data_for_current_position
+from modules.tasks import is_waiting_for_input
+from modules.keyboard import get_naming_screen_data, NamingScreenState
 
 
 @dataclass
@@ -184,19 +186,60 @@ class MemoryReader:
         Get current game state type.
 
         Returns:
-            One of: "overworld", "battle", "menu", "unknown"
+            One of: "overworld", "battle", "menu", "naming_screen", "dialogue", "unknown"
         """
         game_state = get_game_state()
 
+        # Check for naming screen first (specific state)
+        if game_state == GameState.NAMING_SCREEN:
+            return "naming_screen"
+
+        # Check for dialogue (player in overworld but waiting for input)
         if game_state == GameState.OVERWORLD:
+            if is_waiting_for_input():
+                return "dialogue"
             return "overworld"
-        elif game_state in (GameState.BATTLE, GameState.BATTLE_STARTING, GameState.BATTLE_ENDING):
+
+        if game_state in (GameState.BATTLE, GameState.BATTLE_STARTING, GameState.BATTLE_ENDING):
             return "battle"
-        elif game_state in (GameState.BAG_MENU, GameState.PARTY_MENU, GameState.POKE_STORAGE,
-                            GameState.POKEMON_SUMMARY_SCREEN):
+
+        if game_state in (GameState.BAG_MENU, GameState.PARTY_MENU, GameState.POKE_STORAGE,
+                          GameState.POKEMON_SUMMARY_SCREEN, GameState.CHOOSE_STARTER):
             return "menu"
-        else:
-            return "unknown"
+
+        if game_state in (GameState.CHANGE_MAP,):
+            return "map_transition"
+
+        return "unknown"
+
+    def is_dialogue_active(self) -> bool:
+        """
+        Check if dialogue/text box is currently active and waiting for input.
+
+        Returns:
+            True if dialogue is waiting for A/B press
+        """
+        return is_waiting_for_input()
+
+    def get_naming_screen_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Get naming screen information if active.
+
+        Returns:
+            Dict with naming screen state, or None if not active
+        """
+        naming_data = get_naming_screen_data()
+        if naming_data is None:
+            return None
+
+        return {
+            "enabled": naming_data.enabled,
+            "state": naming_data.state.name,
+            "current_input": naming_data.current_input,
+            "keyboard_page": naming_data.keyboard_page.name,
+            "cursor_position": naming_data.cursor_position,
+            "is_ready_for_input": naming_data.state == NamingScreenState.HandleInput
+        }
 
     def read_lightweight_state(self) -> Dict[str, Any]:
         """

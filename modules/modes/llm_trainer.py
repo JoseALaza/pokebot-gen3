@@ -61,12 +61,7 @@ class LLMTrainerMode(BotMode):
         # Valid actions: Up, Down, Left, Right, A, B, WAIT
         # on_end: "stop" (WAIT forever), "loop" (restart), "explore" (switch to explore)
         self.agent.llm.set_script([
-            "Down", "Down", "Down", "Down", "Down",  # Exit house
-            "Down", "Down",                            # Walk south in town
-            "Right", "Right", "Right",                 # Walk east
-            "Up", "Up", "Up",                          # Walk north (should hit wall)
-            "Up", "Up",                                # Repeated block test
-            "Left", "A",                               # Turn + interact test
+            "Left", "Left", "A"                           # Turn + interact test
         ], on_end="stop")
         
         # Decision logger
@@ -84,7 +79,7 @@ class LLMTrainerMode(BotMode):
         # Tracking
         self.frame_count = 0
         self.last_decision_frame = 0
-        self.decision_interval = 30  # Make decision every 30 frames (~0.5 seconds)
+        self.decision_interval = 5*60  # Make decision every 30 frames (~0.5 seconds)
         self.last_blocked_tile: Optional[tuple] = None
 
         console.print("[bold green]LLM Trainer mode initialized successfully![/]")
@@ -206,16 +201,55 @@ class LLMTrainerMode(BotMode):
             if self.frame_count - self.last_decision_frame >= self.decision_interval:
                 # 0. Check if we're in a non-overworld state
                 game_state_type = self.memory_reader.get_game_state_type()
+
                 if game_state_type == "battle":
                     console.print("[red]In battle! Pausing LLM decisions.[/]")
                     self.last_decision_frame = self.frame_count
                     self.frame_count += 1
                     yield
                     continue
+
                 elif game_state_type == "menu":
                     console.print("[yellow]In menu. Pressing B to exit.[/]")
                     self.action_executor.execute("B")
                     for _ in range(10):
+                        yield
+                        self.frame_count += 1
+                    self.last_decision_frame = self.frame_count
+                    continue
+
+                elif game_state_type == "dialogue":
+                    console.print("[cyan]Dialogue active. Pressing A to advance.[/]")
+                    self.action_executor.execute("A")
+                    for _ in range(10):
+                        yield
+                        self.frame_count += 1
+                    self.last_decision_frame = self.frame_count
+                    continue
+
+                elif game_state_type == "naming_screen":
+                    naming_info = self.memory_reader.get_naming_screen_info()
+                    if naming_info:
+                        console.print(
+                            f"[cyan]Naming screen active. "
+                            f"Current input: '{naming_info['current_input']}' "
+                            f"State: {naming_info['state']}[/]"
+                        )
+                        # For now, just press A to accept default or skip
+                        # TODO: Integrate with LLM to generate names
+                        if naming_info['is_ready_for_input']:
+                            self.action_executor.execute("Start")  # Go to OK button
+                        else:
+                            self.action_executor.execute("A")
+                    for _ in range(10):
+                        yield
+                        self.frame_count += 1
+                    self.last_decision_frame = self.frame_count
+                    continue
+
+                elif game_state_type == "map_transition":
+                    # Wait for map transition to complete
+                    for _ in range(5):
                         yield
                         self.frame_count += 1
                     self.last_decision_frame = self.frame_count
@@ -243,7 +277,8 @@ class LLMTrainerMode(BotMode):
                 )
                 
                 if self.map_manager.current_map_key != current_map_key:
-                    old_map_key = self.map_manager.current_map_key
+                    # Map changed - this can happen on first frame or if outcome handler
+                    # didn't catch a transition (e.g., scripted warp, teleport)
                     self.map_manager.save_map()  # Save old map if exists
                     self.map_manager.load_map(
                         game_state_before['player']['map'],
@@ -253,17 +288,8 @@ class LLMTrainerMode(BotMode):
                     console.print(f"[magenta]{self.map_manager.get_map_summary()}[/]")
                     # Increment visit count
                     self.map_manager.current_map_data['visit_count'] += 1
-                    # Record map transition
-                    if old_map_key is not None:
-                        self.map_manager.handle_map_transition(
-                            old_map_key,
-                            old_pos,
-                            old_facing,
-                            current_map_key,
-                            (game_state_before['player']['position']['x'],
-                             game_state_before['player']['position']['y']),
-                            old_facing
-                        )
+                    # Note: handle_map_transition is called in the outcome handler
+                    # where we have correct old/new positions
                 
                 # 2. Process vision and update tile map
                 vision_data = self.vision_processor.process_frame()
@@ -275,12 +301,14 @@ class LLMTrainerMode(BotMode):
                     vision_data['tile_map']
                 )
                 
-                # Mark current position as player
-                self.map_manager.set_traversal_at(
-                    old_pos[0],
-                    old_pos[1],
-                    self.map_manager.PLAYER
-                )
+                # Mark current position as player (but preserve traversal markers)
+                current_marker = self.map_manager.get_traversal_at(old_pos[0], old_pos[1])
+                if current_marker != self.map_manager.TRAVERSAL:
+                    self.map_manager.set_traversal_at(
+                        old_pos[0],
+                        old_pos[1],
+                        self.map_manager.PLAYER
+                    )
                 
                 # 3. Agent makes decision
                 decision = self.agent.decide(game_state_before, vision_data)
@@ -289,17 +317,76 @@ class LLMTrainerMode(BotMode):
                 success = self.action_executor.execute(decision["action"])
                 
                 # 5. WAIT for action to complete with stabilization check
+                # Track both position AND map to detect transitions
                 last_check_pos = None
-                for i in range(12):
+                original_map_key = self.map_manager._get_map_key(
+                    game_state_before['player']['map_group'],
+                    game_state_before['player']['map_number']
+                )
+                original_pos = old_pos
+                stable_frames = 0
+                exit_reason = "timeout"
+
+                # For directional actions, wait minimum frames before allowing "stable" exit
+                # This prevents exiting during black screen transitions
+                is_directional = decision["action"] in ["Up", "Down", "Left", "Right"]
+                min_wait_frames = 25 if is_directional else 5
+
+                for i in range(60):  # Max wait for map transitions (60 frames = ~1 sec)
                     yield
                     self.frame_count += 1
+
                     if i >= 3:
                         check_state = self.memory_reader.read_full_state()
                         check_pos = (check_state['player']['position']['x'],
                                      check_state['player']['position']['y'])
-                        if check_pos == last_check_pos:
+                        check_map_key = self.map_manager._get_map_key(
+                            check_state['player']['map_group'],
+                            check_state['player']['map_number']
+                        )
+
+                        # Detect map change
+                        if check_map_key != original_map_key:
+                            # Wait a few more frames for transition to complete
+                            for _ in range(10):
+                                yield
+                                self.frame_count += 1
+                            exit_reason = "map_change"
                             break
+
+                        # Check for position stabilization (normal movement)
+                        # Only allow stable exit after minimum wait frames
+                        if i >= min_wait_frames:
+                            if check_pos == last_check_pos:
+                                stable_frames += 1
+                                if stable_frames >= 3:  # Stable for 3 consecutive checks
+                                    exit_reason = "stable"
+                                    break
+                            else:
+                                stable_frames = 0
+
                         last_check_pos = check_pos
+
+                # Final transition check: if directional action didn't move player,
+                # wait extra time and re-check for map transition (black screen delays)
+                if is_directional and exit_reason == "stable" and last_check_pos == original_pos:
+                    # Wait additional frames for potential map transition
+                    for extra_wait in range(120):  # Up to 2 more seconds
+                        yield
+                        self.frame_count += 1
+                        if extra_wait % 10 == 0:
+                            check_state = self.memory_reader.read_full_state()
+                            check_map_key = self.map_manager._get_map_key(
+                                check_state['player']['map_group'],
+                                check_state['player']['map_number']
+                            )
+                            if check_map_key != original_map_key:
+                                exit_reason = "delayed_map_change"
+                                # Wait a bit more for full stabilization
+                                for _ in range(15):
+                                    yield
+                                    self.frame_count += 1
+                                break
                 
                 # 6. Read game state AFTER action
                 game_state_after = self.memory_reader.read_full_state()
@@ -315,7 +402,36 @@ class LLMTrainerMode(BotMode):
                     old_map, new_map,
                     old_facing, new_facing
                 )
-                
+
+                # 7b. Check if 'A' button triggered dialogue (interactable detection)
+                # Note: is_dialogue_active() returns True when text FINISHES printing and
+                # the game waits for input. Detection time varies based on dialogue length:
+                # - Short dialogue (~50-100 frames)
+                # - Long dialogue (~150-200+ frames)
+                if decision["action"] == "A" and outcome["type"] == "button_press":
+                    dialogue_detected = False
+                    for dialogue_check in range(180):  # Wait up to 180 frames (~3 seconds)
+                        yield
+                        self.frame_count += 1
+                        if self.memory_reader.is_dialogue_active():
+                            dialogue_detected = True
+                            break
+
+                    if dialogue_detected:
+                        outcome["type"] = "interaction"
+                        outcome["reason"] = "Interacted with object/NPC - dialogue appeared"
+                        # Mark tile in front of player as interactable
+                        target_x, target_y = self.map_manager.calculate_target_tile(
+                            old_pos[0], old_pos[1], old_facing
+                        )
+                        self.map_manager.set_traversal_at(
+                            target_x, target_y,
+                            self.map_manager.INTERACTABLE
+                        )
+                        console.print(
+                            f"[green]  → Marked tile ({target_x}, {target_y}) as INTERACTABLE[/]"
+                        )
+
                 # 8. Update traversal map based on outcome
                 if outcome["type"] == "movement":
                     distance = abs(new_pos[0] - old_pos[0]) + abs(new_pos[1] - old_pos[1])
@@ -329,12 +445,15 @@ class LLMTrainerMode(BotMode):
                             self.map_manager.LEDGE
                         )
                     else:
-                        # Normal movement - mark old position as walkable
-                        self.map_manager.set_traversal_at(
-                            old_pos[0],
-                            old_pos[1],
-                            self.map_manager.WALKABLE
-                        )
+                        # Normal movement - mark old position based on what it was
+                        # Preserve traversal markers (T), otherwise mark as walkable (W)
+                        old_marker = self.map_manager.get_traversal_at(old_pos[0], old_pos[1])
+                        if old_marker != self.map_manager.TRAVERSAL:
+                            self.map_manager.set_traversal_at(
+                                old_pos[0],
+                                old_pos[1],
+                                self.map_manager.WALKABLE
+                            )
                     # Mark new position as player
                     self.map_manager.set_traversal_at(
                         new_pos[0],
@@ -376,20 +495,80 @@ class LLMTrainerMode(BotMode):
                         )
                 
                 elif outcome["type"] == "map_change":
-                    # Mark old position as traversal tile in old map
+                    # Bug fix #1: Mark traversal tile in OLD map correctly
+                    # The traversal tile is where the player stepped TO (in direction they faced)
+                    # NOT where they were standing
+                    action_direction = decision["action"]
+                    if action_direction in ["Up", "Down", "Left", "Right"]:
+                        traversal_x, traversal_y = self.map_manager.calculate_target_tile(
+                            old_pos[0], old_pos[1], action_direction
+                        )
+                    else:
+                        # If action wasn't directional (e.g., A button on door), use old_pos
+                        traversal_x, traversal_y = old_pos[0], old_pos[1]
+
+                    # Mark the traversal tile as T in the OLD map (before we switch maps)
+                    self.map_manager.set_traversal_at(traversal_x, traversal_y, self.map_manager.TRAVERSAL)
+                    # Mark where player WAS standing as walkable
+                    self.map_manager.set_traversal_at(old_pos[0], old_pos[1], self.map_manager.WALKABLE)
+
+                    # Get old map key before saving/switching
+                    old_map_key = self.map_manager.current_map_key
+
+                    # Clear player's tile in old map before saving
+                    # (so we don't leave "player" marker in the old map)
+                    self.map_manager.clear_player_tile(old_pos[0], old_pos[1])
+
+                    # Save the old map with correct traversal markings
+                    self.map_manager.save_map()
+
+                    # Calculate new map key
+                    new_map_key = self.map_manager._get_map_key(
+                        game_state_after['player']['map_group'],
+                        game_state_after['player']['map_number']
+                    )
+
+                    # Record the connection with correct positions
+                    # Exit tile = where player stepped TO in old map (traversal_x, traversal_y)
+                    # Entry tile = where player appeared in new map (new_pos)
+                    if old_map_key is not None:
+                        self.map_manager.map_graph.add_connection(
+                            old_map_key,
+                            (traversal_x, traversal_y),  # Exit tile in old map
+                            new_map_key,
+                            new_pos,  # Entry tile in new map
+                            action_direction if action_direction in ["Up", "Down", "Left", "Right"] else old_facing
+                        )
+                        console.print(
+                            f"[magenta]Added connection: "
+                            f"{old_map_key} ({traversal_x},{traversal_y}) → "
+                            f"{new_map_key} {new_pos}[/]"
+                        )
+
+                    # Load the new map
+                    self.map_manager.load_map(
+                        new_map,
+                        game_state_after['player']['map_group'],
+                        game_state_after['player']['map_number']
+                    )
+                    self.map_manager.current_map_data['visit_count'] += 1
+
+                    # Mark entry tile as traversal point in new map
+                    # This is where warps drop you INTO the map
                     self.map_manager.set_traversal_at(
-                        old_pos[0],
-                        old_pos[1],
+                        new_pos[0],
+                        new_pos[1],
                         self.map_manager.TRAVERSAL
                     )
+
                     console.print(
                         f"[magenta]Map transition: "
-                        f"{old_map} ({old_pos[0]},{old_pos[1]}) → "
-                        f"{new_map} ({new_pos[0]},{new_pos[1]})[/]"
+                        f"{old_map} T@({traversal_x},{traversal_y}) → "
+                        f"{new_map} T@({new_pos[0]},{new_pos[1]})[/]"
                     )
                 
                 # 9. Save map periodically
-                if self.agent.get_decision_count() % 10 == 0:
+                if self.agent.get_decision_count() % 2 == 0:
                     self.map_manager.save_map()
                 
                 # 10. Log decision to file

@@ -31,8 +31,8 @@ class MapManager:
     INTERACTABLE = 'I' # NPC, sign, or interactable object
     LEDGE = 'L'        # One-way ledge jump
     
-    # Buffer size for pre-allocation beyond observed max
-    GRID_BUFFER = 10
+    # No buffer - only allocate exactly what's visible
+    GRID_BUFFER = 0
     
     def __init__(self):
         self.maps_dir = self._get_maps_directory()
@@ -321,20 +321,98 @@ class MapManager:
             for screen_col in range(screen_width):
                 world_x = screen_top_left_x + screen_col
                 world_y = screen_top_left_y + screen_row
-                
+
                 # Only update non-negative coordinates
                 if world_x >= 0 and world_y >= 0:
                     tile_name = screen_tiles[screen_row][screen_col]
-                    
-                    # Update tile_map (always overwrite with latest)
                     tile_map[world_y][world_x] = tile_name
-                    
-                    # Initialize traversal_map for newly discovered tiles
-                    # Keep as '?' until player tries to walk there
-                    if traversal_map[world_y][world_x] == self.UNKNOWN:
-                        # Keep as unknown - will be updated by movement attempts
-                        pass
-    
+
+        # Mark player position as "player" in tile_map for tracking
+        # Vision model sees player sprite as "npc_*", we override it here
+        if player_y >= 0 and player_x >= 0:
+            tile_map[player_y][player_x] = "player"
+
+    def clear_player_tile(
+        self,
+        player_x: int,
+        player_y: int,
+        map_data: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Clear the 'player' marker from tile_map when player leaves the map.
+        Infers the actual tile from adjacent tiles.
+
+        Args:
+            player_x: Player's last X coordinate
+            player_y: Player's last Y coordinate
+            map_data: Map data (uses current if None)
+        """
+        if map_data is None:
+            map_data = self.current_map_data
+
+        if map_data is None:
+            return
+
+        tile_map = map_data["tile_map"]
+
+        # Check bounds
+        if player_y < 0 or player_y >= len(tile_map):
+            return
+        if player_x < 0 or player_x >= len(tile_map[player_y]):
+            return
+
+        # Only clear if it's currently marked as "player"
+        if tile_map[player_y][player_x] != "player":
+            return
+
+        # Infer the actual tile from adjacent tiles
+        inferred_tile = self._infer_tile_from_adjacent(player_x, player_y, tile_map)
+        tile_map[player_y][player_x] = inferred_tile
+
+    def _infer_tile_from_adjacent(
+        self,
+        x: int,
+        y: int,
+        tile_map: List[List[str]]
+    ) -> str:
+        """
+        Infer what tile should be at (x, y) based on adjacent tiles.
+
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            tile_map: The tile map
+
+        Returns:
+            Inferred tile name
+        """
+        # Check adjacent tiles (up, down, left, right)
+        adjacent_positions = [
+            (x, y - 1),  # up
+            (x, y + 1),  # down
+            (x - 1, y),  # left
+            (x + 1, y),  # right
+        ]
+
+        # Collect valid adjacent tiles (not unknown, not player, not npc_*)
+        valid_tiles = []
+        for ax, ay in adjacent_positions:
+            if ay >= 0 and ay < len(tile_map):
+                if ax >= 0 and ax < len(tile_map[ay]):
+                    tile = tile_map[ay][ax]
+                    # Skip invalid tiles
+                    if tile not in ["unknown", "player"] and not tile.startswith("npc"):
+                        valid_tiles.append(tile)
+
+        if valid_tiles:
+            # Return the most common adjacent tile
+            from collections import Counter
+            tile_counts = Counter(valid_tiles)
+            return tile_counts.most_common(1)[0][0]
+
+        # Fallback to "unknown" if no valid adjacent tiles
+        return "unknown"
+
     def calculate_target_tile(
         self,
         player_x: int,
