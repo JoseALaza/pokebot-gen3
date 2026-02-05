@@ -20,8 +20,7 @@ POKEMON_SYSTEM_PROMPT = dedent("""
     - Ledges (L): Can only jump DOWN ledges, not up/sideways
 
     ## Map Information You Receive
-    1. **Tile Map**: Shows terrain types (floor, wall, grass, water, npc, etc.)
-    2. **Traversal Map**: Shows movement possibilities:
+    1. **Traversal Map**: Shows movement possibilities:
        - W = Walkable (confirmed you can walk here)
        - N = Blocked (confirmed obstacle - wall, object, NPC)
        - ? = Unknown (not yet explored)
@@ -36,21 +35,33 @@ POKEMON_SYSTEM_PROMPT = dedent("""
     - ✗ = Failed (blocked, couldn't move)
     - ⟳ = Turned (faced new direction but didn't move yet)
 
-    ## Your Response
-    Respond with EXACTLY one JSON object:
+    ## Your Response Format
+    Respond with a JSON object. Required fields:
     {
         "action": "Up|Down|Left|Right|A|B|WAIT",
-        "reasoning": "Brief explanation (1 sentence)"
+        "reasoning": "Why this action advances your goal"
     }
 
-    ## Strategy Tips
-    - LEARN FROM FAILURES: If an action was blocked (✗), don't repeat it!
-    - EXPLORE: Move toward ? tiles to map unknown areas
-    - USE TRANSITIONS: T tiles are doors/exits - walk into them to change maps
-    - INTERACT: Use A when facing NPCs (I tiles) or to check objects
-    - DON'T GET STUCK: If blocked in one direction, try another
-    - REMEMBER: After turning, you need to press the same direction again to move
-    - PROGRESS: Your goal is to explore, battle trainers, and collect gym badges
+    Optional fields to update your memory:
+    {
+        "goal_update": "New immediate goal if current one is done/changed",
+        "observation": "Important fact you learned (door location, NPC info, etc.)",
+        "plan": "Your current strategy for achieving your goal"
+    }
+
+    ## CRITICAL STRATEGY - MAINTAIN FOCUS
+    - You have GOALS shown below - every action should work toward them!
+    - If you have a short-term goal, focus on it until complete
+    - DON'T wander randomly - have a PURPOSE for each move
+    - When you complete a goal, set a new one with "goal_update"
+    - Use "observation" to remember important locations
+    - If stuck, set a new plan with "plan"
+
+    ## Exploration Priority
+    1. First: Complete your current immediate goal
+    2. Then: Use transition tiles (T) to explore new areas
+    3. Then: Explore unknown tiles (?) to map the area
+    4. Avoid: Revisiting the same tiles repeatedly
 """).strip()
 
 
@@ -59,7 +70,9 @@ def build_user_prompt(
     vision_data: Dict[str, Any],
     recent_decisions: List[Dict[str, Any]],
     map_summary: Optional[str] = None,
-    traversal_context: Optional[Dict[str, Any]] = None
+    traversal_context: Optional[Dict[str, Any]] = None,
+    memory_context: Optional[str] = None,
+    exploration_priority: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Build comprehensive user prompt with full game context.
@@ -70,6 +83,8 @@ def build_user_prompt(
         recent_decisions: Recent decisions WITH outcomes
         map_summary: Current map exploration summary
         traversal_context: Additional context about surroundings
+        memory_context: Agent's goals, observations, and plans
+        exploration_priority: Suggested directions and priorities
     """
     player = game_state.get("player", {})
     pos = player.get("position", {})
@@ -152,35 +167,45 @@ def build_user_prompt(
     # Build known connections info
     connections_str = ""
     if traversal_context and traversal_context.get('connections'):
-        connections_str = "\nKnown Exits:\n"
+        connections_str = "\n## Known Exits\n"
         for conn in traversal_context['connections'][:5]:
             connections_str += f"  - {conn.get('direction', '?')}: leads to {conn.get('target_map', '?')}\n"
 
-    # Build the full prompt
-    prompt = f"""## Current State
+    # Build exploration suggestions
+    explore_str = ""
+    if exploration_priority:
+        explore_str = "\n## Exploration Suggestions\n"
+        if exploration_priority.get('is_stuck'):
+            explore_str += "⚠️ WARNING: You seem to be going in circles!\n"
+        if exploration_priority.get('suggested_direction'):
+            explore_str += f"- Suggested direction: {exploration_priority['suggested_direction']}\n"
+        if exploration_priority.get('unexplored_directions'):
+            explore_str += f"- Unexplored areas: {', '.join(exploration_priority['unexplored_directions'])}\n"
+        if exploration_priority.get('transitions'):
+            for t in exploration_priority['transitions'][:2]:
+                explore_str += f"- Transition {t['direction']} ({t['distance']} tiles away)\n"
+
+    # Build the full prompt - put goals/memory FIRST so LLM sees them
+    prompt = f"""{memory_context if memory_context else '## Goals\\n- Explore and progress through the game'}
+
+## Current State
 {chr(10).join('- ' + line for line in state_lines)}
 
-## What's Around You (each direction from your position)
+## What's Around You
 {direction_info}
-
-## Traversal Map (5x5 around you, P=you, W=walkable, N=blocked, ?=unknown, T=transition, I=interact)
+{explore_str}
+## Traversal Map (P=you, W=walkable, N=blocked, ?=unknown, T=transition, I=interact)
 {traversal_str.strip() if traversal_str else '(no traversal data)'}
 
-## Tile Map (terrain types)
-{tile_str.strip() if tile_str else '(no tile data)'}
-
 ## Your Pokemon
-{party_str.strip() if party_str else '(no pokemon)'}
+{party_str.strip() if party_str else '(no pokemon yet)'}
 
 ## Recent Actions & Results
 {history.strip() if history else '(first decision)'}
 {connections_str}
 ## Your Turn
-Based on the above, what's your next action? Remember:
-- Don't repeat blocked actions
-- Explore unknown (?) areas
-- Use T tiles to change maps
-Respond with JSON: {{"action": "...", "reasoning": "..."}}"""
+Choose an action that advances your goals. If you complete a goal, set a new one.
+Respond with JSON: {{"action": "...", "reasoning": "...", "goal_update": "..." (optional)}}"""
 
     return prompt
 
@@ -244,13 +269,14 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
     """
     Parse LLM response text into a decision dict.
     Handles JSON embedded in markdown code blocks or plain text.
+    Also extracts optional memory updates (goal_update, observation, plan).
     """
     # Try to extract JSON from code blocks
     code_block = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
     if code_block:
         response_text = code_block.group(1)
 
-    # Try to find JSON object
+    # Try to find JSON object - allow for nested content
     json_match = re.search(r'\{[^{}]*"action"[^{}]*\}', response_text, re.DOTALL)
     if json_match:
         try:
@@ -263,12 +289,22 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
             action_map = {a.lower(): a for a in valid_actions}
             action = action_map.get(action.lower(), "WAIT")
 
-            return {
+            result = {
                 "action": action,
                 "reasoning": reasoning,
                 "confidence": 0.8,
                 "strategy": "llm"
             }
+
+            # Extract optional memory updates
+            if "goal_update" in data and data["goal_update"]:
+                result["goal_update"] = data["goal_update"]
+            if "observation" in data and data["observation"]:
+                result["observation"] = data["observation"]
+            if "plan" in data and data["plan"]:
+                result["plan"] = data["plan"]
+
+            return result
         except json.JSONDecodeError:
             pass
 
@@ -321,7 +357,9 @@ class BaseLLMProvider(ABC):
         vision_data: Dict[str, Any],
         recent_decisions: Optional[List[Dict[str, Any]]] = None,
         map_summary: Optional[str] = None,
-        traversal_context: Optional[Dict[str, Any]] = None
+        traversal_context: Optional[Dict[str, Any]] = None,
+        memory_context: Optional[str] = None,
+        exploration_priority: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Make a gameplay decision using the LLM.
@@ -332,6 +370,8 @@ class BaseLLMProvider(ABC):
             recent_decisions: Recent decision history WITH outcomes
             map_summary: Current map summary string
             traversal_context: Additional context (connections, etc.)
+            memory_context: Agent's goals, observations, plans
+            exploration_priority: Suggested directions and stuck detection
 
         Returns:
             Decision dict with action and reasoning
@@ -341,7 +381,9 @@ class BaseLLMProvider(ABC):
             vision_data,
             recent_decisions or [],
             map_summary,
-            traversal_context
+            traversal_context,
+            memory_context,
+            exploration_priority
         )
 
         try:

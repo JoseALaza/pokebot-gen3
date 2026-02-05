@@ -56,7 +56,14 @@ class LLMTrainerMode(BotMode):
         # Strategies: "explore", "random", "scripted_exit_house", "scripted"
         # self.agent = Agent(use_mock=True, mock_strategy="scripted")
         # Real LLM:   Agent(use_mock=False, provider="openai", model="gpt-4o-mini")
-        self.agent = Agent(use_mock=False, provider="gemini", api_key="AIzaSyCh4LFHeVnx8v1PM340I-M_yV3e5FlUfU4")
+        memory_path = str(Path(context.profile.path) / "llm_trainer" / "agent_memory.json")
+        # Options: "anthropic", "openai", "gemini"
+        self.agent = Agent(
+            use_mock=False,
+            provider="openai",
+            api_key="",
+            memory_save_path=memory_path
+        )
         
 
         # ── Define your test script here (only for MockLLM) ──
@@ -205,22 +212,6 @@ class LLMTrainerMode(BotMode):
                 # 0. Check if we're in a non-overworld state
                 game_state_type = self.memory_reader.get_game_state_type()
 
-                # Debug: Show raw game state on first few frames
-                if self.frame_count < 500:
-                    from modules.memory import get_game_state
-                    from modules.tasks import get_global_script_context
-                    raw_state = get_game_state()
-                    script_ctx = get_global_script_context()
-                    try:
-                        player = self.memory_reader.get_player_state()
-                        console.print(
-                            f"[dim]Frame {self.frame_count}: raw={raw_state.name} | "
-                            f"type={game_state_type} | pos=({player.x},{player.y}) | "
-                            f"map={player.map_name}[/]"
-                        )
-                    except Exception as e:
-                        console.print(f"[dim]Frame {self.frame_count}: raw={raw_state.name} | type={game_state_type} | player error: {e}[/]")
-
                 if game_state_type == "battle":
                     console.print("[red]In battle! Pausing LLM decisions.[/]")
                     self.last_decision_frame = self.frame_count
@@ -239,57 +230,37 @@ class LLMTrainerMode(BotMode):
 
                 elif game_state_type == "dialogue":
                     # Smart dialogue handling: keep pressing A until we exit dialogue
-                    # or hit the max attempts limit
                     dialogue_presses = 0
                     max_dialogue_presses = 50  # Safety limit
 
-                    # Debug: show initial state
-                    from modules.tasks import get_global_script_context
-                    script_ctx = get_global_script_context()
-                    console.print(f"[cyan]Dialogue detected. Script: {script_ctx.native_function_name}[/]")
-                    console.print(f"[dim]  Stack: {script_ctx.stack[:3]}...[/]")
+                    console.print("[cyan]Dialogue detected. Advancing...[/]")
 
                     while dialogue_presses < max_dialogue_presses:
-                        # Press A to advance
                         self.action_executor.execute("A")
                         dialogue_presses += 1
 
-                        # Wait for text to finish printing or dialogue to exit
-                        # Check every few frames if we're still in dialogue
+                        # Wait for dialogue to end (5 consecutive frames without dialogue)
                         frames_without_dialogue = 0
-                        for wait_frame in range(30):  # Wait up to 30 frames per press
+                        for _ in range(30):
                             yield
                             self.frame_count += 1
 
-                            # Check if dialogue ended
-                            is_active = self.memory_reader.is_dialogue_active()
-                            if not is_active:
+                            if not self.memory_reader.is_dialogue_active():
                                 frames_without_dialogue += 1
-                                # Need several frames of "no dialogue" to confirm we're out
                                 if frames_without_dialogue >= 5:
-                                    console.print(f"[green]Dialogue ended after {dialogue_presses} presses.[/]")
                                     break
                             else:
                                 frames_without_dialogue = 0
 
-                        # If we got 5+ frames without dialogue, we're done
                         if frames_without_dialogue >= 5:
+                            console.print(f"[green]Dialogue ended ({dialogue_presses} presses).[/]")
                             break
 
-                        # Debug: show state every 10 presses
                         if dialogue_presses % 10 == 0:
-                            script_ctx = get_global_script_context()
-                            game_st = self.memory_reader.get_game_state_type()
-                            is_active = self.memory_reader.is_dialogue_active()
-                            console.print(
-                                f"[cyan]Still in dialogue... ({dialogue_presses}x) | "
-                                f"game_state={game_st} | is_active={is_active}[/]"
-                            )
-                            console.print(f"[dim]  Script: {script_ctx.native_function_name} | Stack: {script_ctx.stack[:2]}[/]")
+                            console.print(f"[cyan]Still in dialogue... ({dialogue_presses}x)[/]")
 
                     if dialogue_presses >= max_dialogue_presses:
-                        console.print(f"[yellow]Dialogue limit reached ({max_dialogue_presses}). Trying B to exit.[/]")
-                        # Try pressing B several times to force exit
+                        console.print(f"[yellow]Dialogue limit reached. Trying B to exit.[/]")
                         for _ in range(10):
                             self.action_executor.execute("B")
                             for _ in range(5):
@@ -411,7 +382,8 @@ class LLMTrainerMode(BotMode):
                     game_state_before,
                     vision_data,
                     map_summary=map_summary,
-                    traversal_context=traversal_context
+                    traversal_context=traversal_context,
+                    map_key=current_map_key
                 )
                 
                 # 4. Execute action

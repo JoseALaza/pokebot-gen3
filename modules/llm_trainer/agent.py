@@ -224,6 +224,8 @@ class Agent:
     Can use:
     - MockLLM for testing (multiple strategies)
     - Real LLM APIs (openai, anthropic, gemini)
+
+    Includes AgentMemory for persistent goals and observations.
     """
 
     def __init__(
@@ -232,7 +234,8 @@ class Agent:
         mock_strategy: str = "random",
         provider: Optional[str] = None,
         model: Optional[str] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        memory_save_path: Optional[str] = None
     ):
         self.use_mock = use_mock
         self.provider = None
@@ -256,12 +259,20 @@ class Agent:
         self.decision_history = []
         self.total_decisions = 0
 
+        # Initialize memory system
+        from pathlib import Path
+        from modules.llm_trainer.agent_memory import AgentMemory
+        save_path = Path(memory_save_path) if memory_save_path else None
+        self.memory = AgentMemory(save_path=save_path)
+        console.print(f"[yellow]Agent memory initialized[/]")
+
     def decide(
         self,
         game_state: Dict[str, Any],
         vision_data: Dict[str, Any],
         map_summary: Optional[str] = None,
-        traversal_context: Optional[Dict[str, Any]] = None
+        traversal_context: Optional[Dict[str, Any]] = None,
+        map_key: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Make a decision based on current state and vision.
@@ -271,10 +282,23 @@ class Agent:
             vision_data: Vision data from VisionProcessor (should include traversal_map)
             map_summary: Current map exploration summary string
             traversal_context: Additional context like known connections
+            map_key: Current map identifier for memory tracking
 
         Returns:
             Decision dictionary with action, reasoning, metadata
         """
+        # Track position for stuck detection
+        pos = game_state.get("player", {}).get("position", {})
+        if map_key and pos:
+            self.memory.record_position(map_key, pos.get("x", 0), pos.get("y", 0))
+
+        # Get exploration priority
+        traversal_map = vision_data.get("traversal_map", [])
+        exploration_priority = self.memory.get_exploration_priority(map_key or "", traversal_map)
+
+        # Get memory context for prompt
+        memory_context = self.memory.get_context_for_prompt(map_key or "")
+
         if self.use_mock:
             decision = self.llm.decide(game_state, vision_data)
         else:
@@ -283,8 +307,13 @@ class Agent:
                 vision_data,
                 recent_decisions=self.decision_history[-10:],
                 map_summary=map_summary,
-                traversal_context=traversal_context
+                traversal_context=traversal_context,
+                memory_context=memory_context,
+                exploration_priority=exploration_priority
             )
+
+        # Process any memory updates from LLM response
+        self.memory.parse_llm_memory_updates(decision)
 
         # Add metadata
         decision["timestamp"] = datetime.now().isoformat()

@@ -88,6 +88,13 @@ class GeminiProvider(BaseLLMProvider):
                     logger.warning(f"Rate limited. Retrying in {wait}s...")
                     time.sleep(wait)
                     continue
+                # Log the actual error response
+                try:
+                    error_body = response.text
+                    logger.error(f"Gemini API error ({response.status_code}): {error_body}")
+                    print(f"Gemini API error: {error_body}")
+                except:
+                    pass
                 raise
             except Exception as e:
                 if attempt == 2:
