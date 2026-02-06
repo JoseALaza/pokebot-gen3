@@ -44,7 +44,11 @@ POKEMON_SYSTEM_PROMPT = dedent("""
 
     Optional fields to update your memory:
     {
-        "goal_update": "New immediate goal if current one is done/changed",
+        "goal_update": {
+            "short_term": "Immediate task (if current one is done/changed)",
+            "medium_term": "Current major objective (optional)",
+            "long_term": "Overall objective (optional)"
+        },
         "observation": "Important fact you learned (door location, NPC info, etc.)",
         "plan": "Your current strategy for achieving your goal"
     }
@@ -186,7 +190,13 @@ def build_user_prompt(
                 explore_str += f"- Transition {t['direction']} ({t['distance']} tiles away)\n"
 
     # Build the full prompt - put goals/memory FIRST so LLM sees them
-    prompt = f"""{memory_context if memory_context else '## Goals\\n- Explore and progress through the game'}
+    default_goals = (
+        "## Current Goals\n"
+        "- Long-term: Progress through the Pokemon FireRed story\n"
+        "- Current objective: Locate the next exit or NPC that advances the story\n"
+        "- Immediate task: Use the traversal map to reach a transition (T) or interactable (I)\n"
+    )
+    prompt = f"""{memory_context if memory_context else default_goals}
 
 ## Current State
 {chr(10).join('- ' + line for line in state_lines)}
@@ -205,7 +215,7 @@ def build_user_prompt(
 {connections_str}
 ## Your Turn
 Choose an action that advances your goals. If you complete a goal, set a new one.
-Respond with JSON: {{"action": "...", "reasoning": "...", "goal_update": "..." (optional)}}"""
+Respond with JSON: {{"action": "...", "reasoning": "...", "goal_update": {{"short_term": "...", "medium_term": "...", "long_term": "..."}} (optional)}}"""
 
     return prompt
 

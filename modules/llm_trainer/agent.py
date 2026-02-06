@@ -312,6 +312,17 @@ class Agent:
                 exploration_priority=exploration_priority
             )
 
+        # Enforce exploration when stuck to break loops
+        suggested_direction = exploration_priority.get("suggested_direction") if exploration_priority else None
+        if exploration_priority and exploration_priority.get("is_stuck") and suggested_direction:
+            if decision.get("action") != suggested_direction:
+                decision["reasoning"] = (
+                    f"{decision.get('reasoning', '').strip()} "
+                    f"[Overridden: stuck detected, forcing move {suggested_direction}]"
+                ).strip()
+                decision["action"] = suggested_direction
+                decision["strategy"] = decision.get("strategy", "llm") + "_stuck_override"
+
         # Process any memory updates from LLM response
         self.memory.parse_llm_memory_updates(decision)
 
