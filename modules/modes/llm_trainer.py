@@ -60,9 +60,8 @@ class LLMTrainerMode(BotMode):
         # Options: "anthropic", "openai", "gemini"
         self.agent = Agent(
             use_mock=False,
-            provider="openai",
-            api_key="",
-            memory_save_path=memory_path
+            provider="ollama",
+            model="llama3.1:8b"
         )
         
 
