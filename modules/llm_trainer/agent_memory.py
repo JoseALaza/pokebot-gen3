@@ -29,6 +29,7 @@ class AgentMemory:
         self.long_term_goal = "Progress through the Pokemon FireRed story"
         self.medium_term_goal = ""
         self.short_term_goal = ""
+        self.short_term_goal_age = 0
 
         # Memory storage
         self.observations: List[str] = []  # Things we've learned
@@ -63,6 +64,7 @@ class AgentMemory:
         """Set immediate task"""
         if goal != self.short_term_goal:
             self.short_term_goal = goal
+            self.short_term_goal_age = 0
             self._save()
 
     def clear_short_term_goal(self):
@@ -70,6 +72,7 @@ class AgentMemory:
         if self.short_term_goal:
             self.add_event(f"Completed: {self.short_term_goal}")
             self.short_term_goal = ""
+            self.short_term_goal_age = 0
             self._save()
 
     def add_observation(self, observation: str):
@@ -118,6 +121,8 @@ class AgentMemory:
         """Record current position for stuck detection"""
         pos = (map_key, x, y)
         self.last_positions.append(pos)
+        if self.short_term_goal:
+            self.short_term_goal_age += 1
 
         # Track visited tiles per map
         if map_key not in self.visited_tiles:
@@ -254,6 +259,9 @@ class AgentMemory:
         if self.is_stuck():
             lines.append("\n## ⚠️ WARNING: You seem to be stuck in a loop!")
             lines.append("Try a DIFFERENT approach - go to unexplored areas or use a transition (T tile)")
+        if self.short_term_goal and self.short_term_goal_age >= 40:
+            lines.append("\n## ⚠️ Goal Staleness Warning")
+            lines.append("Your immediate task seems to be taking too long. Consider updating the goal or changing the plan.")
 
         return "\n".join(lines)
 
@@ -271,7 +279,19 @@ class AgentMemory:
         }
         """
         if "goal_update" in response and response["goal_update"]:
-            self.set_short_term_goal(response["goal_update"])
+            goal_update = response["goal_update"]
+            if isinstance(goal_update, dict):
+                short_term = goal_update.get("short_term")
+                medium_term = goal_update.get("medium_term")
+                long_term = goal_update.get("long_term")
+                if long_term:
+                    self.set_long_term_goal(long_term)
+                if medium_term:
+                    self.set_medium_term_goal(medium_term)
+                if short_term:
+                    self.set_short_term_goal(short_term)
+            else:
+                self.set_short_term_goal(goal_update)
 
         if "observation" in response and response["observation"]:
             self.add_observation(response["observation"])
@@ -288,6 +308,7 @@ class AgentMemory:
             "long_term_goal": self.long_term_goal,
             "medium_term_goal": self.medium_term_goal,
             "short_term_goal": self.short_term_goal,
+            "short_term_goal_age": self.short_term_goal_age,
             "observations": self.observations,
             "current_plan": self.current_plan,
             "spatial_memory": self.spatial_memory,
@@ -313,6 +334,7 @@ class AgentMemory:
             self.long_term_goal = data.get("long_term_goal", self.long_term_goal)
             self.medium_term_goal = data.get("medium_term_goal", "")
             self.short_term_goal = data.get("short_term_goal", "")
+            self.short_term_goal_age = data.get("short_term_goal_age", 0)
             self.observations = data.get("observations", [])
             self.current_plan = data.get("current_plan", "")
             self.spatial_memory = data.get("spatial_memory", {})
